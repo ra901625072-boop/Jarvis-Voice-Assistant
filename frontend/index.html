@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>J.A.R.V.I.S. AI Dashboard</title>
+    <!-- Preload critical assets -->
+    <link rel="preload" href="JarvisB.webp" as="image">
+    <link rel="preload" href="JarvisA.webp" as="image">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    
+    <!-- LiveKit Client SDK -->
+    <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="glass-panel dashboard-container">
+        <!-- Header -->
+        <header class="dashboard-header">
+            <h1>J.A.R.V.I.S. <span class="version">v2.0</span></h1>
+            <div id="status-indicator" class="status idle">
+                <span class="dot"></span>
+                <span id="status-text">Disconnected</span>
+            </div>
+        </header>
+
+        <!-- Main Content Grid -->
+        <div class="dashboard-body">
+            
+            <!-- Left Sidebar -->
+            <aside class="widgets-panel">
+                <div class="widget">
+                    <h3>SYSTEM TIME</h3>
+                    <div id="clock-widget" class="widget-value">--:--:--</div>
+                </div>
+                <div class="widget">
+                    <h3>System Load</h3>
+                    <div class="widget-value" id="cpu-value">0%</div>
+                    <div class="progress-bar"><div class="progress" id="cpu-progress" style="width: 0%"></div></div>
+                </div>
+                <div class="widget">
+                    <h3>Core Temp</h3>
+                    <div class="widget-value" id="temp-value">0°C</div>
+                    <div class="progress-bar"><div class="progress" id="temp-progress" style="width: 0%"></div></div>
+                </div>
+            </aside>
+
+            <!-- Center Orb -->
+            <main class="orb-section">
+                <div class="orb-container">
+                    <div class="orb-wrapper">
+                        <img id="ai-orb" src="JarvisA.webp" alt="J.A.R.V.I.S. AI Orb" class="orb idle">
+                        <!-- Advanced Glowing rings -->
+                        <div class="ring ring-1"></div>
+                        <div class="ring ring-2"></div>
+                        <div class="ring ring-3"></div>
+                        <div class="ring ring-4"></div>
+                    </div>
+                </div>
+                
+                <div class="agent-status-container">
+                    <div class="scanning-line hidden" id="scanning-line"></div>
+                    <p id="agent-state-text" class="agent-state-text">System Standby</p>
+                    
+                    <div class="voice-wave hidden" id="voice-wave">
+                        <span></span><span></span><span></span><span></span><span></span>
+                    </div>
+                </div>
+
+                <div id="error-notification" class="error-notification hidden">
+                    <svg viewBox="0 0 24 24" class="error-icon"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+                    <span id="error-message">Connection failed</span>
+                </div>
+            </main>
+
+            <!-- Right Sidebar -->
+            <aside class="widgets-panel right">
+                <div class="conversation-panel">
+                    <h3 class="panel-title">SYSTEM LOGS</h3>
+                    <div id="conversation-preview" class="conversation-preview">
+                        <p><span class="log-time sys">[SYS]</span> Awaiting uplink...</p>
+                    </div>
+                </div>
+            </aside>
+        </div>
+    </div>
+
+    <script src="app.js" defer></script>
+</body>
+</html>
