@@ -1,95 +1,91 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>J.A.R.V.I.S. AI Dashboard</title>
-    <meta name="description" content="J.A.R.V.I.S. AI interactive dashboard interface.">
-    <!-- Preload critical assets -->
-    <link rel="preload" href="JarvisB.webp" as="image">
-    <link rel="preload" href="JarvisA.webp" as="image">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    
-    <!-- LiveKit Client SDK -->
-    <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
-    <link rel="stylesheet" href="base.css">
-    <link rel="stylesheet" href="style.css">
-    <link rel="stylesheet" href="mobile.css">
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>J.A.R.V.I.S</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/desktop.css">
+<link rel="stylesheet" media="screen and (max-width:768px)"
+      href="css/mobile.css">
 </head>
+
 <body>
-    <main class="hud-panel dashboard-container">
-        <!-- Header -->
-        <header class="dashboard-header">
-            <h1>J.A.R.V.I.S. <span class="version">v2.0</span></h1>
-            <div id="status-indicator" class="status idle" role="status" aria-live="polite">
-                <span class="dot"></span>
-                <span id="status-text">Disconnected</span>
-            </div>
-        </header>
 
-        <!-- Main Content Grid -->
-        <div class="dashboard-body">
-            
-            <!-- Left Sidebar -->
-            <aside class="widgets-panel" aria-label="System Metrics">
-                <article class="widget">
-                    <h3>SYSTEM TIME</h3>
-                    <div id="clock-widget" class="widget-value" aria-live="polite">--:--:--</div>
-                </article>
-                <article class="widget">
-                    <h3>System Load</h3>
-                    <div class="widget-value" id="cpu-value">0%</div>
-                    <div class="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" id="cpu-progress-container"><div class="progress" id="cpu-progress" style="transform: scaleX(0); transform-origin: left;"></div></div>
-                </article>
-                <article class="widget">
-                    <h3>Core Temp</h3>
-                    <div class="widget-value" id="temp-value">0°C</div>
-                    <div class="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" id="temp-progress-container"><div class="progress" id="temp-progress" style="transform: scaleX(0); transform-origin: left;"></div></div>
-                </article>
-            </aside>
+<div class="jarvis-app">
 
-            <!-- Center Orb -->
-            <section class="orb-section" aria-label="J.A.R.V.I.S. Core">
-                <div class="orb-container">
-                    <div class="orb-wrapper">
-                        <img id="ai-orb" src="JarvisA.webp" alt="J.A.R.V.I.S. AI Orb" class="orb idle" role="button" tabindex="0" aria-label="Toggle J.A.R.V.I.S. Connection">
-                        <!-- Advanced Glowing rings -->
-                        <div class="ring ring-1"></div>
-                        <div class="ring ring-2"></div>
-                        <div class="ring ring-3"></div>
-                        <div class="ring ring-4"></div>
-                    </div>
-                </div>
-                
-                <div class="agent-status-container">
-                    <div class="scanning-line hidden" id="scanning-line"></div>
-                    <p id="agent-state-text" class="agent-state-text" aria-live="polite">System Standby</p>
-                    
-                    <div class="voice-wave hidden" id="voice-wave" aria-hidden="true">
-                        <span></span><span></span><span></span><span></span><span></span>
-                    </div>
-                </div>
+    <!-- Background -->
+    <div class="bg-image"></div>
 
-                <div id="error-notification" class="error-notification hidden" role="alert" aria-live="assertive">
-                    <svg viewBox="0 0 24 24" class="error-icon" aria-hidden="true"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
-                    <span id="error-message">Connection failed</span>
-                </div>
-            </section>
+    <!-- Header -->
+    <header class="topbar">
 
-            <!-- Right Sidebar -->
-            <aside class="widgets-panel right" aria-label="System Logs">
-                <div class="conversation-panel">
-                    <h3 class="panel-title">SYSTEM LOGS</h3>
-                    <div id="conversation-preview" class="conversation-preview" aria-live="polite" aria-relevant="additions">
-                        <p><span class="log-time sys">[SYS]</span> Awaiting uplink...</p>
-                    </div>
-                </div>
-            </aside>
+        <div class="brand">
+            J.A.R.V.I.S
         </div>
+
+
+
+        <div class="connection idle" id="status-indicator">
+            <span class="dot"></span>
+            <span id="status-text">Disconnected</span>
+        </div>
+
+    </header>
+
+    <!-- Desktop Layout -->
+    <main class="dashboard">
+
+        <!-- Left -->
+        <section class="left-panel">
+
+            <div class="system-card">
+                <h4>System Time</h4>
+                <p id="clock-widget">--:--:--</p>
+            </div>
+
+            <div class="system-card">
+                <h4>System Load</h4>
+                <p id="cpu-value">--%</p>
+                <div class="progress-bar"><div class="progress-fill" id="cpu-progress"></div></div>
+            </div>
+
+            <div class="system-card">
+                <h4>Core Temp</h4>
+                <p id="temp-value">--°C</p>
+                <div class="progress-bar"><div class="progress-fill" id="temp-progress"></div></div>
+            </div>
+
+        </section>
+
+        <!-- Center -->
+        <section class="center-panel">
+            <div class="wave-container" id="golden-wave">
+                <img src="img/wave.gif" class="wave-gif" alt="Jarvis Neural Wave">
+            </div>
+        </section>
+
+        <!-- Right -->
+        <section class="message-panel">
+
+            <div class="message-box" id="conversation-preview">
+            </div>
+
+        </section>
+
     </main>
 
-    <script src="app.js" defer></script>
+</div>
+
+<!-- Script is handled by app.js -->
+
+<script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+<script src="app.js"></script>
+
 </body>
 </html>

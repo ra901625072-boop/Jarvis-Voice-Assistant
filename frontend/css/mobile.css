@@ -1,0 +1,124 @@
+@media screen and (max-width:768px){
+
+.topbar{
+
+height:70px;
+
+padding:0 15px;
+}
+
+.brand{
+
+font-size:1.6rem;
+
+letter-spacing:4px;
+}
+
+.version{
+
+padding:6px 14px;
+
+font-size:.85rem;
+}
+
+.connection{
+
+padding:6px 12px;
+font-size:.8rem;
+}
+
+.dashboard{
+
+display:flex;
+flex-direction:column;
+
+padding-top:90px;
+}
+
+.left-panel{
+
+display:grid;
+
+grid-template-columns:
+1fr 1fr 1fr;
+
+gap:10px;
+
+width:100%;
+
+padding:0 12px;
+}
+
+.system-card{
+
+padding:12px;
+text-align:center;
+}
+
+.system-card h4{
+font-size:.7rem;
+}
+
+.system-card p{
+font-size:1rem;
+}
+
+.center-panel{
+
+flex:1;
+
+display:flex;
+align-items:center;
+justify-content:center;
+}
+
+
+
+.message-panel{
+
+width:100%;
+
+height:140px;
+
+padding:12px;
+
+position:fixed;
+
+left:0;
+bottom:0;
+}
+
+.message-box{
+
+height:100%;
+
+overflow:hidden;
+
+backdrop-filter:blur(16px);
+
+background:
+rgba(0,10,30,.75);
+
+border-radius:20px;
+}
+
+.message{
+
+font-size:.9rem;
+}
+
+.wave-container {
+    position: absolute;
+    bottom: 200px;
+    left: 50%;
+    transform: translate(-50%, 15px);
+    width: 100%;
+    max-width: 90%;
+    height: 100px;
+}
+
+.wave-container.active {
+    transform: translate(-50%, 0);
+}
+
+}
