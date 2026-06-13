@@ -46,6 +46,8 @@ class GoalMemory:
         # In-memory cache of active goals (refreshed on demand)
         self._goal_cache: List[Dict[str, Any]] = []
         self._cache_ts: str = ""
+        self._goal_context_str_cache: str = ""
+        self._goal_context_str_ts: float = 0.0
 
     # ------------------------------------------------------------------ #
     # Public API — Goal Management                                         #
@@ -213,8 +215,15 @@ class GoalMemory:
 
     def goal_context_string(self) -> str:
         """Return a formatted string of active goals for LLM context injection."""
+        import time
+        now = time.time()
+        if self._goal_context_str_cache and (now - self._goal_context_str_ts < 30):
+            return self._goal_context_str_cache
+
         goals = self.get_active_goals()
         if not goals:
+            self._goal_context_str_cache = ""
+            self._goal_context_str_ts = now
             return ""
 
         lines = ["--- ACTIVE GOALS ---"]
@@ -232,7 +241,10 @@ class GoalMemory:
         for g in root_goals[:5]: # Top 5 roots
             print_goal(g)
             
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        self._goal_context_str_cache = result
+        self._goal_context_str_ts = now
+        return result
 
     # ------------------------------------------------------------------ #
     # Auto-detection                                                       #
@@ -288,3 +300,5 @@ class GoalMemory:
     def _invalidate_cache(self) -> None:
         self._goal_cache = []
         self._cache_ts   = ""
+        self._goal_context_str_cache = ""
+        self._goal_context_str_ts = 0.0

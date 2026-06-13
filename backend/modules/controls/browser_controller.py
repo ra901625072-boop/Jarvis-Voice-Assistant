@@ -20,6 +20,8 @@ class BrowserController:
         self.page: Optional[Page] = None
         self._search_cache = {}
         self._lock = threading.Lock()
+        self._page_pool = []
+        self._pool_lock = asyncio.Lock()
         
         # We run playwright in a background asyncio loop for synchronous API exposure if needed,
         # but since JARVIS uses async tools, we'll initialize it lazily.
@@ -71,6 +73,28 @@ class BrowserController:
             logger.info("Playwright bound to Edge remote debugging port 9222 successfully.")
         except Exception as e:
             logger.error(f"Failed to connect Playwright to Edge: {e}")
+
+
+    async def _get_pooled_page(self):
+        async with self._pool_lock:
+            if self._page_pool:
+                for p in self._page_pool:
+                    if not p.is_closed():
+                        self._page_pool.remove(p)
+                        return p
+        return await self.context.new_page()
+
+    async def _return_pooled_page(self, page):
+        try:
+            if page.is_closed():
+                return
+            async with self._pool_lock:
+                if len(self._page_pool) < 3:
+                    self._page_pool.append(page)
+                else:
+                    await page.close()
+        except Exception:
+            pass
 
     def normalize_url(self, url: str) -> str:
         if "." not in url:
@@ -214,21 +238,21 @@ class BrowserController:
                 aggregated_content += f"[{i}] TITLE: {res['title']}\n    URL: {res['url']}\n"
                 
                 try:
-                    # Open in new tab to avoid losing search page
-                    new_page = await self.context.new_page()
-                    await new_page.goto(res['url'], wait_until="domcontentloaded", timeout=10000)
+                    # Use a pooled page to avoid new_page() context overhead
+                    pooled_page = await self._get_pooled_page()
+                    await pooled_page.goto(res['url'], wait_until="domcontentloaded", timeout=10000)
                     
                     # Extract main text
-                    page_text = await new_page.evaluate("document.body.innerText")
+                    page_text = await pooled_page.evaluate("document.body.innerText")
                     cleaned_text = " ".join([l.strip() for l in page_text.split("\n") if l.strip()])
                     truncated_text = cleaned_text[:2000] + ("..." if len(cleaned_text) > 2000 else "")
                     aggregated_content += f"    CONTENT: {truncated_text}\n\n"
                     
-                    await new_page.close()
+                    await self._return_pooled_page(pooled_page)
                 except Exception as e:
                     aggregated_content += f"    CONTENT: [Failed to extract page content: {e}]\n\n"
-                    if 'new_page' in locals() and not new_page.is_closed():
-                        await new_page.close()
+                    if 'pooled_page' in locals() and not pooled_page.is_closed():
+                        await pooled_page.close()
             
             await self.page.bring_to_front()
             return aggregated_content

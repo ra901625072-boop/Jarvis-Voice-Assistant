@@ -59,7 +59,31 @@ def _safe_alter(conn: sqlite3.Connection, table: str, col: str, col_def: str) ->
 # MemoryManager
 # ============================================================
 
+
+import time
+from functools import wraps
+
+def ttl_cache(maxsize=100, ttl=300):
+    cache = {}
+    def decorator(func):
+        @wraps(func)
+        def wrapper(self, *args, **kwargs):
+            key = str(args) + str(kwargs)
+            now = time.time()
+            if key in cache:
+                result, timestamp = cache[key]
+                if now - timestamp < ttl:
+                    return result
+            result = func(self, *args, **kwargs)
+            cache[key] = (result, now)
+            if len(cache) > maxsize:
+                cache.pop(next(iter(cache)))
+            return result
+        return wrapper
+    return decorator
+
 class MemoryManager:
+
     """
     Orchestrates all JARVIS memory subsystems.
 
@@ -127,8 +151,6 @@ class MemoryManager:
             shared_conn.execute("PRAGMA synchronous=NORMAL")
             shared_conn.execute("PRAGMA foreign_keys=ON")
 
-        self._init_tables()
-
         # ChromaDB — lazy initialisation
         self._vector_checked  = False
         self._vector_enabled  = False
@@ -150,13 +172,33 @@ class MemoryManager:
         )
         self._scheduler_thread.start()
 
-        # Seed agent self-model (no-op if already done)
+        logger.info("JARVIS Cognitive MemoryManager (Phase 5) initialized.")
+
+    def initialize_minimal(self) -> None:
+        """Minimal initialization for MemoryManager to prevent blocking startup."""
+        self._init_tables()
+        # Seed self model in background to avoid blocking
+        threading.Thread(target=self._delayed_seed_self_model, daemon=True).start()
+        # Warm up ChromaDB execution provider models in background
+        threading.Thread(target=self._warmup_vector_store, daemon=True).start()
+
+    def _delayed_seed_self_model(self) -> None:
+        import time
+        time.sleep(5)
         try:
             self.lifecycle.seed_self_model()
         except Exception:
             pass
 
-        logger.info("JARVIS Cognitive MemoryManager (Phase 5) initialized.")
+    def _warmup_vector_store(self) -> None:
+        if self._ensure_vector_client():
+            try:
+                self.memory_collection.query(
+                    query_texts=["warmup"],
+                    n_results=1
+                )
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
@@ -168,7 +210,7 @@ class MemoryManager:
                 schedule.run_pending()
             except Exception as e:
                 logger.error(f"Scheduler error: {e}")
-            time.sleep(1)
+            time.sleep(30)
 
     def _ensure_vector_client(self) -> bool:
         if self._vector_checked:
@@ -310,6 +352,16 @@ class MemoryManager:
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
                     description TEXT NOT NULL,
                     status      TEXT DEFAULT 'pending'
+                )
+            """)
+
+
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS session_metrics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    duration REAL NOT NULL,
+                    disconnect_reason TEXT NOT NULL
                 )
             """)
 
@@ -527,6 +579,9 @@ class MemoryManager:
 
     def log_conversation(self, role: str, content: str) -> None:
         """Log a conversation turn. Scores, gates, resolves conflicts, then stores."""
+        import time
+        start_t = time.perf_counter()
+        
         timestamp    = self._now()
         meta         = self._scorer.analyze(content, role)
         importance   = meta["importance"]
@@ -546,41 +601,49 @@ class MemoryManager:
             self._commit()
 
         # Phase 5: route through memory lifecycle (gate + resolve + store)
-        try:
-            stored = self.lifecycle.on_new_message(
-                content=content,
-                role=role,
-                importance=importance,
-                memory_type=memory_type,
-                project=project,
-                tags=tags,
-                timestamp=timestamp,
-            )
-        except Exception as e:
-            logger.error(f"Lifecycle on_new_message failed, falling back: {e}")
-            # Fallback: direct store if lifecycle fails
+        _FAST_CHAT_MODE = os.getenv("JARVIS_FAST_CHAT", "1") == "1"
+        if _FAST_CHAT_MODE and importance < MemoryImportance.MEDIUM:
             stored = False
-            if importance >= MemoryImportance.MEDIUM:
-                self._store_typed_memory(content, memory_type, project, importance, tags, timestamp)
-                stored = True
-
-        # Vector store with rich metadata (always, regardless of gate decision)
-        if self._ensure_vector_client():
+        else:
             try:
-                self.collection.add(
-                    documents=[content],
-                    metadatas=[{
-                        "role":        role,
-                        "importance":  importance,
-                        "memory_type": memory_type,
-                        "project":     project,
-                        "tags":        tags,
-                        "timestamp":   timestamp,
-                    }],
-                    ids=[str(inserted_id)],
+                stored = self.lifecycle.on_new_message(
+                    content=content,
+                    role=role,
+                    importance=importance,
+                    memory_type=memory_type,
+                    project=project,
+                    tags=tags,
+                    timestamp=timestamp,
                 )
             except Exception as e:
-                logger.error(f"Vector insert failed: {e}")
+                logger.error(f"Lifecycle on_new_message failed, falling back: {e}")
+                # Fallback: direct store if lifecycle fails
+                stored = False
+                if importance >= MemoryImportance.MEDIUM:
+                    self._store_typed_memory(content, memory_type, project, importance, tags, timestamp)
+                    stored = True
+
+        # Vector store with rich metadata (only if important enough)
+        if importance >= MemoryImportance.MEDIUM and self._ensure_vector_client():
+            def _bg_vector_add():
+                try:
+                    self.collection.add(
+                        documents=[content],
+                        metadatas=[{
+                            "role":        role,
+                            "importance":  importance,
+                            "memory_type": memory_type,
+                            "project":     project,
+                            "tags":        tags,
+                            "timestamp":   timestamp,
+                        }],
+                        ids=[str(inserted_id)],
+                    )
+                except Exception as e:
+                    logger.error(f"Vector insert failed: {e}")
+            threading.Thread(target=_bg_vector_add, daemon=True).start()
+            
+        logger.info(f"Memory write: {time.perf_counter() - start_t:.3f}s")
 
     def get_recent_history(self, limit: int = 10) -> list:
         with self._lock:
@@ -699,6 +762,20 @@ class MemoryManager:
             )
             self.dbs["conversations"].commit()
             logger.info(f"Pruned {cursor.rowcount} old conversations.")
+
+
+    def log_session_disconnect(self, duration: float, disconnect_reason: str) -> None:
+        try:
+            with self._lock:
+                conn = next(iter(self.dbs.values()))
+                conn.execute(
+                    "INSERT INTO session_metrics (timestamp, duration, disconnect_reason) VALUES (?, ?, ?)",
+                    (self._now(), duration, disconnect_reason)
+                )
+                self._commit(force=True)
+        except Exception as e:
+            import logging
+            logging.getLogger("JARVIS.Memory").error(f"Failed to log session disconnect: {e}")
 
     def backup_databases(self) -> None:
         logger.info("Running automated database backup...")
@@ -829,6 +906,7 @@ class MemoryManager:
 
     # ── Typed search ─────────────────────────────────────────────────── #
 
+    @ttl_cache(maxsize=100, ttl=300)
     def search_memories(
         self,
         query: str,
@@ -840,7 +918,18 @@ class MemoryManager:
         Hybrid search across all typed memories.
         Filters by memory_type and/or project if provided.
         """
-        # Try ChromaDB memories collection first
+        import time
+        start_t = time.perf_counter()
+        
+        # Try SQLite FTS first for speed
+        fts_results = self._fts_memory_fallback(query, memory_type, project, limit=10)
+        
+        # If we got strong results from SQLite, return them and skip ChromaDB
+        if fts_results and len(fts_results) >= limit // 2:
+            logger.info(f"Memory retrieval (SQLite): {time.perf_counter() - start_t:.3f}s")
+            return fts_results[:limit]
+            
+        # Try ChromaDB memories collection as fallback
         if self._ensure_vector_client():
             try:
                 where_filter = {}
@@ -879,13 +968,16 @@ class MemoryManager:
                             "score":       final_score,
                         })
                     candidates.sort(key=lambda x: x["score"], reverse=True)
+                    logger.info(f"Memory retrieval (Hybrid DB): {time.perf_counter() - start_t:.3f}s")
                     return candidates[:limit]
             except Exception as e:
                 logger.error(f"Memory search (ChromaDB) failed: {e}")
 
-        # SQLite fallback — search semantic_memories
-        return self._fts_memory_fallback(query, memory_type, project, limit)
+        # SQLite fallback if vector search fails completely
+        logger.info(f"Memory retrieval (Fallback): {time.perf_counter() - start_t:.3f}s")
+        return fts_results[:limit]
 
+    @ttl_cache(maxsize=100, ttl=300)
     def get_project_context(self, project_name: str) -> str:
         """Return all memories tagged to a specific project as a formatted string."""
         with self._lock:

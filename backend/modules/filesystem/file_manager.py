@@ -118,17 +118,25 @@ class FileManager:
         self.db_path = db_path
         self.lock_manager = ResourceLockManager()
         self._db_lock = LegacyLockWrapper(self.lock_manager, 'db', self.db_path)
+        self._local = threading.local()
         self._init_db()
+
+    @property
+    def _shared_conn(self):
+        if not hasattr(self._local, "conn"):
+            self._local.conn = sqlite3.connect(self.db_path)
+            self._local.conn.execute("PRAGMA journal_mode=WAL")
+            self._local.conn.execute("PRAGMA synchronous=NORMAL")
+        return self._local.conn
         self._path_cache = {}
+        self._indexer_started = False
         
-        # Start background indexer for workspace and key folders
-        self.start_background_indexer()
         logger.info(f"FileManager initialized with DB: {db_path}")
 
     def _init_db(self):
         """Initializes the SQLite database tables."""
         with self._db_lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._shared_conn
             try:
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("PRAGMA synchronous=NORMAL")
@@ -158,8 +166,7 @@ class FileManager:
                 conn.commit()
             except Exception as e:
                 logger.error(f"Failed to initialize database: {e}")
-            finally:
-                conn.close()
+            
 
     def log_file_access(self, path: str):
         """Logs a file access event to SQLite for search memory and ranking."""
@@ -168,7 +175,7 @@ class FileManager:
             filename = os.path.basename(path)
             timestamp = datetime.now().isoformat()
             with self._db_lock:
-                conn = sqlite3.connect(self.db_path)
+                conn = self._shared_conn
                 try:
                     conn.execute("""
                         INSERT INTO file_history (path, filename, open_count, last_opened)
@@ -180,8 +187,7 @@ class FileManager:
                     conn.commit()
                 except Exception as e:
                     logger.error(f"Failed to log file access for {path}: {e}")
-                finally:
-                    conn.close()
+                
         except Exception as e:
             logger.error(f"Error logging file access: {e}")
 
@@ -259,6 +265,10 @@ class FileManager:
 
     def start_background_indexer(self, root_paths: list = None):
         """Launches directory crawling to cache files in SQLite."""
+        if getattr(self, '_indexer_started', False):
+            return
+        self._indexer_started = True
+        
         if root_paths is None:
             # Project root workspace
             workspace = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -277,6 +287,7 @@ class FileManager:
 
     def _background_index_task(self, root_paths: list):
         """Walks folders to update sqlite cache."""
+        import time
         ignore_dirs = {'.git', 'node_modules', 'venv', 'AppData', 'Windows', 'Program Files', 'Program Files (x86)', '__pycache__', 'Temp', 'Local', 'Roaming'}
         chunk_size = 500
         batch = []
@@ -319,7 +330,7 @@ class FileManager:
 
     def _save_cache_batch(self, batch: list):
         with self._db_lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._shared_conn
             try:
                 conn.executemany("""
                     INSERT OR REPLACE INTO file_cache (path, filename, filename_lower, extension, last_modified, size, is_dir)
@@ -328,8 +339,7 @@ class FileManager:
                 conn.commit()
             except Exception as e:
                 logger.error(f"Failed to save index batch to database: {e}")
-            finally:
-                conn.close()
+            
 
     def _search_everything(self, query: str, limit: int = 100) -> list:
         """Queries Everything SDK via ctypes DLL."""
@@ -444,7 +454,7 @@ class FileManager:
         """Queries local sqlite database index cache."""
         results = []
         with self._db_lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._shared_conn
             try:
                 cursor = conn.cursor()
                 query = "SELECT path FROM file_cache WHERE 1=1"
@@ -479,8 +489,7 @@ class FileManager:
                 results = [r[0] for r in cursor.fetchall()]
             except Exception as e:
                 logger.error(f"SQLite cache query failed: {e}")
-            finally:
-                conn.close()
+            
         return results
 
     def _search_threaded_scan(self, filename: str, root_dir: str = None, limit: int = 100, extensions: list = None) -> list:
@@ -549,7 +558,7 @@ class FileManager:
         # Load open history from SQLite database
         history = {}
         with self._db_lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._shared_conn
             try:
                 cursor = conn.cursor()
                 cursor.execute("SELECT path, open_count, last_opened FROM file_history")
@@ -557,8 +566,7 @@ class FileManager:
                     history[row[0]] = {"count": row[1], "last_opened": row[2]}
             except Exception as e:
                 logger.warning(f"Failed to fetch history for ranking: {e}")
-            finally:
-                conn.close()
+            
                 
         now = time.time()
         file_details = []
@@ -627,6 +635,7 @@ class FileManager:
         Searches for a file or folder using fuzzy matching and multiple search providers.
         """
         logger.info(f"Searching for item '{filename}'...")
+        self.start_background_indexer()
         
         parsed = self.parse_nlp_query(filename)
         search_keyword = parsed["clean_query"] if parsed["clean_query"] else filename

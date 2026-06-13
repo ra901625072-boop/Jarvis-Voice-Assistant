@@ -265,10 +265,15 @@ class MemoryLifecycle:
         7. Agent reflections (recent)
         8. Conversation summaries
         """
+        # FAST PATH: if no query and no preferences exist, return empty quickly
+        prefs = self.mm.get_all_preferences()
+        goals_str = self.goal_memory.goal_context_string()
+        if not current_query and not prefs and not goals_str:
+            return ""
+
         sections: List[Dict[str, Any]] = []
 
         # 1. Active goals
-        goals_str = self.goal_memory.goal_context_string()
         if goals_str:
             sections.append({"priority": 10, "text": goals_str})
 

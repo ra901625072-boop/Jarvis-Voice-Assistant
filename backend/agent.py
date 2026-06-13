@@ -4,6 +4,28 @@ from dotenv import load_dotenv
 env_path = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(env_path, override=False)
 
+
+import time
+from functools import wraps
+
+def async_ttl_cache(ttl=300):
+    cache = {}
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            key_args = tuple(args[1:])
+            key = (func.__name__, key_args, frozenset(kwargs.items()))
+            now = time.time()
+            if key in cache:
+                result, timestamp = cache[key]
+                if now - timestamp < ttl:
+                    return result
+            result = await func(*args, **kwargs)
+            cache[key] = (result, now)
+            return result
+        return wrapper
+    return decorator
+
 import asyncio
 import inspect
 from livekit import agents
@@ -12,21 +34,7 @@ from livekit.plugins import (
     google,
 )
 
-# Import all controllers from our modules
-from modules.controls.app_controller import AppController
-from modules.controls.browser_controller import BrowserController
-from modules.controls.volume_controller import VolumeController
-from modules.controls.brightness_controller import BrightnessController
-from modules.controls.keyboard_controller import KeyboardController
-from modules.controls.mouse_controller import MouseController
-from modules.filesystem.file_manager import FileManager
-from modules.filesystem.folder_manager import FolderManager
-from modules.controls.window_controller import WindowController
-from modules.controls.system_controller import SystemController, capture_screen
-from modules.perception.vision import analyze_screen, extract_text_from_screen
-from modules.perception.screen_observer import ScreenObserver
-from modules.perception.ui_mapper import UIMapper
-from modules.planning.action_verifier import ActionVerifier
+# Lazy-loaded controllers will be imported on demand.
 from modules.core.memory_manager import MemoryManager
 from modules.core.security_manager import SecurityManager
 from modules.core.cognitive_coordinator import CognitiveCoordinator
@@ -38,20 +46,64 @@ from modules.execution.world_state import WorldStateManager
 from modules.execution.verification_engine import VerificationEngine
 from modules.filesystem.fs_utils import is_safe_path
 
-# Initialize global background task manager and global file/folder manager instances
+# Initialize global background task manager
 _db_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "database")
 os.makedirs(_db_dir, exist_ok=True)
 task_manager = BackgroundTaskManager(db_path=os.path.join(_db_dir, "tasks.db"))
+_task_manager_started = False
 
-_global_file_mgr = FileManager()
-_global_folder_mgr = FolderManager(file_mgr=_global_file_mgr)
-_global_screen_observer = ScreenObserver(cache_duration=3.0)
-_global_ui_mapper = UIMapper(observer=_global_screen_observer)
-_global_action_verifier = ActionVerifier(observer=_global_screen_observer)
+def _ensure_task_manager():
+    global _task_manager_started
+    if not _task_manager_started:
+        task_manager.start()
+        _task_manager_started = True
+
+_global_file_mgr = None
+_global_folder_mgr = None
+
+def _get_file_mgr():
+    global _global_file_mgr
+    if _global_file_mgr is None:
+        from modules.filesystem.file_manager import FileManager
+        _global_file_mgr = FileManager()
+    return _global_file_mgr
+
+def _get_folder_mgr():
+    global _global_folder_mgr
+    if _global_folder_mgr is None:
+        from modules.filesystem.folder_manager import FolderManager
+        _global_folder_mgr = FolderManager(file_mgr=_get_file_mgr())
+    return _global_folder_mgr
+
+class GlobalRegistry:
+    _screen_observer = None
+    _ui_mapper = None
+    _action_verifier = None
+
+    @classmethod
+    def get_screen_observer(cls):
+        if cls._screen_observer is None:
+            from modules.perception.screen_observer import ScreenObserver
+            cls._screen_observer = ScreenObserver(cache_duration=3.0)
+        return cls._screen_observer
+
+    @classmethod
+    def get_ui_mapper(cls):
+        if cls._ui_mapper is None:
+            from modules.perception.ui_mapper import UIMapper
+            cls._ui_mapper = UIMapper(observer=cls.get_screen_observer())
+        return cls._ui_mapper
+
+    @classmethod
+    def get_action_verifier(cls):
+        if cls._action_verifier is None:
+            from modules.planning.action_verifier import ActionVerifier
+            cls._action_verifier = ActionVerifier(observer=cls.get_screen_observer())
+        return cls._action_verifier
 
 def handle_move_file(context, src, dest):
     context.update_progress(10)
-    res = _global_file_mgr.move_item(src, dest, force_sync=True)
+    res = _get_file_mgr().move_item(src, dest, force_sync=True)
     if isinstance(res, str) and res.startswith("Error:"):
         raise RuntimeError(res)
     context.update_progress(100)
@@ -59,7 +111,7 @@ def handle_move_file(context, src, dest):
 
 def handle_move_folder(context, src, dest):
     context.update_progress(10)
-    res = _global_folder_mgr.move_folder(src, dest, force_sync=True)
+    res = _get_folder_mgr().move_folder(src, dest, force_sync=True)
     if isinstance(res, str) and res.startswith("Error:"):
         raise RuntimeError(res)
     context.update_progress(100)
@@ -67,7 +119,7 @@ def handle_move_folder(context, src, dest):
 
 def handle_copy_file(context, src, dest):
     context.update_progress(10)
-    res = _global_file_mgr.copy_item(src, dest)
+    res = _get_file_mgr().copy_item(src, dest)
     if isinstance(res, str) and res.startswith("Error:"):
         raise RuntimeError(res)
     context.update_progress(100)
@@ -75,7 +127,7 @@ def handle_copy_file(context, src, dest):
 
 def handle_copy_folder(context, src, dest):
     context.update_progress(10)
-    res = _global_folder_mgr.copy_folder(src, dest)
+    res = _get_folder_mgr().copy_folder(src, dest)
     if isinstance(res, str) and res.startswith("Error:"):
         raise RuntimeError(res)
     context.update_progress(100)
@@ -86,7 +138,7 @@ task_manager.register_handler("move_file", handle_move_file)
 task_manager.register_handler("move_folder", handle_move_folder)
 task_manager.register_handler("copy_file", handle_copy_file)
 task_manager.register_handler("copy_folder", handle_copy_folder)
-task_manager.start()
+# task_manager is started on-demand via _ensure_task_manager()
 
 class JarvisToolset(llm.Toolset):
     def __init__(self, security: SecurityManager = None, room=None):
@@ -120,6 +172,9 @@ class JarvisToolset(llm.Toolset):
             else:
                 result = await asyncio.to_thread(func, *args)
             exec_ms = int((_time.monotonic() - t0) * 1000)
+            
+            import logging
+            logging.getLogger("JARVIS.Tool").info(f"Tool execution [{tool_name}]: {exec_ms/1000.0:.3f}s")
 
             is_error = (
                 result is False
@@ -186,48 +241,16 @@ class VerificationTools(JarvisToolset):
 class SystemTools(JarvisToolset):
     def __init__(self, security: SecurityManager, room=None):
         super().__init__(security, room)
-        self.system_ctrl = SystemController()
+        self._system_ctrl = None
 
-    @llm.function_tool(
-        description="""
-Capture a temporary screenshot only when visual information is required.
+    @property
+    def system_ctrl(self):
+        if self._system_ctrl is None:
+            from modules.controls.system_controller import SystemController
+            self._system_ctrl = SystemController()
+        return self._system_ctrl
 
-Use this tool to:
-- Read screen text
-- Identify applications
-- Detect errors
-- Describe UI elements
-- Analyze images or documents currently visible
 
-Do not call this tool unless visual information is necessary for answering the user's request.
-
-The screenshot is automatically deleted after analysis.
-"""
-    )
-    async def analyze_current_screen(self) -> str:
-        image_path, screen_hash, _ = _global_screen_observer.get_screenshot()
-        if not image_path:
-            return "Error: Failed to capture screen."
-        result = await asyncio.to_thread(analyze_screen, image_path, screen_hash)
-        return result
-
-    @llm.function_tool(
-        description="Read text visible on the screen."
-    )
-    async def read_screen_text(self) -> str:
-        image_path, screen_hash, _ = _global_screen_observer.get_screenshot()
-        if not image_path:
-            return "Error: Failed to capture screen."
-        result = await asyncio.to_thread(extract_text_from_screen, image_path, screen_hash)
-        return result
-
-    @llm.function_tool(description="Verify if a visual outcome or state was achieved on screen (e.g. 'Login page is visible', 'Error message popped up').")
-    async def verify_action(self, expected_state: str, window_title: str = None) -> str:
-        result = await asyncio.to_thread(_global_action_verifier.verify_state, expected_state, window_title)
-        if result:
-            return f"Verified: '{expected_state}' is present on the screen."
-        else:
-            return f"Verification Failed: '{expected_state}' was not detected on the screen."
 
     @llm.function_tool(description="Shutdown the computer system. Requires user confirmation.")
     async def shutdown_system(self, confirmed: bool = False) -> str:
@@ -277,7 +300,14 @@ The screenshot is automatically deleted after analysis.
 class WindowTools(JarvisToolset):
     def __init__(self, security: SecurityManager, room=None):
         super().__init__(security, room)
-        self.window_ctrl = WindowController()
+        self._window_ctrl = None
+
+    @property
+    def window_ctrl(self):
+        if self._window_ctrl is None:
+            from modules.controls.window_controller import WindowController
+            self._window_ctrl = WindowController()
+        return self._window_ctrl
 
     @llm.function_tool(description="Minimize a window by its title keyword, or the active window if none provided.")
     async def minimize_window(self, title_keyword: str = None) -> str:
@@ -310,7 +340,14 @@ class WindowTools(JarvisToolset):
 class AppTools(JarvisToolset):
     def __init__(self, security: SecurityManager, room=None):
         super().__init__(security, room)
-        self.app_ctrl = AppController()
+        self._app_ctrl = None
+
+    @property
+    def app_ctrl(self):
+        if self._app_ctrl is None:
+            from modules.controls.app_controller import AppController
+            self._app_ctrl = AppController()
+        return self._app_ctrl
 
     @llm.function_tool(description="Open an application by its name (e.g., notepad, calculator, chrome)")
     async def open_application(self, app_name: str) -> str:
@@ -323,7 +360,14 @@ class AppTools(JarvisToolset):
 class BrowserTools(JarvisToolset):
     def __init__(self, security: SecurityManager, room=None):
         super().__init__(security, room)
-        self.browser_ctrl = BrowserController()
+        self._browser_ctrl = None
+
+    @property
+    def browser_ctrl(self):
+        if self._browser_ctrl is None:
+            from modules.controls.browser_controller import BrowserController
+            self._browser_ctrl = BrowserController()
+        return self._browser_ctrl
 
     @llm.function_tool(description="Open a specific URL in the browser")
     async def open_url(self, url: str) -> str:
@@ -338,16 +382,41 @@ class BrowserTools(JarvisToolset):
         return await self.safe_execute(self.browser_ctrl.close_website, domain_or_title, success_msg=f"Closed website tab matching '{domain_or_title}'.", error_msg=f"Could not find or close website tab matching '{domain_or_title}'.")
 
     @llm.function_tool(description="Search Google for a specific query")
+    @async_ttl_cache(ttl=300)
     async def search_google(self, query: str) -> str:
         return await self.safe_execute(self.browser_ctrl.search, query, success_msg=f"Performed Google search for {query}.")
 
     @llm.function_tool(
-        description="Search live for a query, parse top results, extract page contents, and return results. By default, queries Google first and falls back to Wikipedia if blocked or empty. You can also explicitly request a specific engine using the engine parameter ('google', 'wikipedia')."
+        description="Search live for a query, parse top results, extract page contents, and return results. By default, queries using a fast API first and falls back to browser scraping if blocked or empty. You can also explicitly request a specific engine using the engine parameter (\'google\', \'wikipedia\', \'browser_scrape\')."
     )
+    @async_ttl_cache(ttl=300)
     async def search_google_live(self, query: str, engine: str = "google") -> str:
+        if engine in ["google", "ddg", "fast"]:
+            try:
+                # Run fast-path duckduckgo API search
+                import asyncio
+                from duckduckgo_search import DDGS
+                
+                def _do_ddg_search():
+                    with DDGS() as ddgs:
+                        return list(ddgs.text(query, max_results=4))
+                        
+                # Run blocking DDGS in thread pool to avoid blocking async event loop
+                results = await asyncio.to_thread(_do_ddg_search)
+                if results:
+                    aggregated = f"Fast API Search Results for '{query}':\n\n"
+                    for i, res in enumerate(results, 1):
+                        aggregated += f"[{i}] TITLE: {res.get('title')}\n    URL: {res.get('href')}\n    CONTENT: {res.get('body')}\n\n"
+                    return aggregated
+            except Exception as e:
+                import logging
+                logging.getLogger("JARVIS.Agent").warning(f"Fast-path DDG search failed: {e}. Falling back to BrowserController...")
+        
+        # Fallback to the slow, deep browser scraping
         return await self.safe_execute(self.browser_ctrl.search_live, query, 3, engine)
 
     @llm.function_tool(description="Search YouTube for a specific query")
+    @async_ttl_cache(ttl=300)
     async def search_youtube(self, query: str) -> str:
         return await self.safe_execute(self.browser_ctrl.search_youtube, query, success_msg=f"Performed YouTube search for {query}.")
 
@@ -388,8 +457,22 @@ class BrowserTools(JarvisToolset):
 class MediaTools(JarvisToolset):
     def __init__(self, security: SecurityManager, room=None):
         super().__init__(security, room)
-        self.volume_ctrl = VolumeController()
-        self.brightness_ctrl = BrightnessController()
+        self._volume_ctrl = None
+        self._brightness_ctrl = None
+
+    @property
+    def volume_ctrl(self):
+        if self._volume_ctrl is None:
+            from modules.controls.volume_controller import VolumeController
+            self._volume_ctrl = VolumeController()
+        return self._volume_ctrl
+
+    @property
+    def brightness_ctrl(self):
+        if self._brightness_ctrl is None:
+            from modules.controls.brightness_controller import BrightnessController
+            self._brightness_ctrl = BrightnessController()
+        return self._brightness_ctrl
 
     @llm.function_tool(description="Set the system volume to a specific percentage (0-100)")
     async def set_volume(self, level: int) -> str:
@@ -410,7 +493,14 @@ class MediaTools(JarvisToolset):
 class KeyboardTools(JarvisToolset):
     def __init__(self, security: SecurityManager, room=None):
         super().__init__(security, room)
-        self.keyboard_ctrl = KeyboardController()
+        self._keyboard_ctrl = None
+
+    @property
+    def keyboard_ctrl(self):
+        if self._keyboard_ctrl is None:
+            from modules.controls.keyboard_controller import KeyboardController
+            self._keyboard_ctrl = KeyboardController()
+        return self._keyboard_ctrl
 
     @llm.function_tool(description="Type a given text string exactly using the keyboard")
     async def type_text(self, text: str, confirmed: bool = False) -> str:
@@ -433,7 +523,14 @@ class KeyboardTools(JarvisToolset):
 class MouseTools(JarvisToolset):
     def __init__(self, security: SecurityManager, room=None):
         super().__init__(security, room)
-        self.mouse_ctrl = MouseController(observer=_global_screen_observer, ui_mapper=_global_ui_mapper)
+        self._mouse_ctrl = None
+
+    @property
+    def mouse_ctrl(self):
+        if self._mouse_ctrl is None:
+            from modules.controls.mouse_controller import MouseController
+            self._mouse_ctrl = MouseController()
+        return self._mouse_ctrl
 
     @llm.function_tool(description="Left click the mouse at its current location, or optionally at specified x,y coordinates")
     async def click_mouse(self, x: int = None, y: int = None) -> str:
@@ -463,22 +560,19 @@ class MouseTools(JarvisToolset):
             return f"Mouse is currently at {x},{y}."
         return str(res)
 
-    @llm.function_tool(description="Uses AI Vision to find and click an interactive UI element (button, link, text box) by its description.")
-    async def click_element_vision(self, description: str, window_title: str = None) -> str:
-        return await self.safe_execute(self.mouse_ctrl.click_element_vision, description, window_title, success_msg=f"Successfully clicked '{description}'.", error_msg=f"Failed to find or click '{description}'.")
 
-    @llm.function_tool(description="Uses AI Vision to find the exact x,y coordinates of an interactive element by its description.")
-    async def find_element_vision(self, description: str, window_title: str = None) -> str:
-        coords = await self.safe_execute(self.mouse_ctrl.find_element_vision, description, window_title)
-        if isinstance(coords, tuple):
-            return f"Element '{description}' found at coordinates {coords[0]}, {coords[1]}."
-        return str(coords) if str(coords).startswith("Error:") else f"Could not locate '{description}'."
 
 class FileTools(JarvisToolset):
     def __init__(self, security: SecurityManager, room=None):
         super().__init__(security, room)
-        self.file_mgr = FileManager()
-        self.folder_mgr = FolderManager(file_mgr=self.file_mgr)
+
+    @property
+    def file_mgr(self):
+        return _get_file_mgr()
+
+    @property
+    def folder_mgr(self):
+        return _get_folder_mgr()
 
     @llm.function_tool(description="Resolve a file or folder query like 'my resume' or 'PythonProjects' into an absolute path")
     async def resolve_file_path(self, query: str) -> str:
@@ -535,6 +629,7 @@ class FileTools(JarvisToolset):
             if is_dir:
                 if is_cross_drive:
                     # Queue in background task manager
+                    _ensure_task_manager()
                     task_id = task_manager.add_task("move_folder", args=(src_abs, dest_abs))
                     return f"The transfer of folder '{src}' to '{dest}' has started in the background (Task ID: {task_id}). You can check its status using get_background_task_status."
                 else:
@@ -552,6 +647,7 @@ class FileTools(JarvisToolset):
                         pass
                 
                 if is_cross_drive and large_file:
+                    _ensure_task_manager()
                     task_id = task_manager.add_task("move_file", args=(src_abs, dest_abs))
                     return f"The transfer of file '{src}' to '{dest}' has started in the background (Task ID: {task_id}). You can check its status using get_background_task_status."
                 else:
@@ -578,6 +674,7 @@ class FileTools(JarvisToolset):
             
             if is_dir:
                 if is_cross_drive:
+                    _ensure_task_manager()
                     task_id = task_manager.add_task("copy_folder", args=(src_abs, dest_abs))
                     return f"Copying folder '{src}' to '{dest}' has started in the background (Task ID: {task_id}). You can check its status using get_background_task_status."
                 else:
@@ -591,6 +688,7 @@ class FileTools(JarvisToolset):
                         pass
                 
                 if is_cross_drive and large_file:
+                    _ensure_task_manager()
                     task_id = task_manager.add_task("copy_file", args=(src_abs, dest_abs))
                     return f"Copying file '{src}' to '{dest}' has started in the background (Task ID: {task_id}). You can check its status using get_background_task_status."
                 else:
@@ -687,12 +785,22 @@ class MemoryTools(JarvisToolset):
     def __init__(self, memory: MemoryManager, security: SecurityManager, room=None):
         super().__init__(security, room)
         self.memory = memory
-        # Instantiate ExecutiveController here
-        self.coordinator = None
-        if hasattr(self.memory, 'lifecycle'):
+        self._coordinator = None
+        self._executive_controller = None
+
+    @property
+    def coordinator(self):
+        if self._coordinator is None and hasattr(self.memory, 'lifecycle'):
             from modules.core.cognitive_coordinator import CognitiveCoordinator
-            self.coordinator = CognitiveCoordinator(self.memory)
-        self.executive_controller = ExecutiveController(self.memory, self.coordinator)
+            self._coordinator = CognitiveCoordinator(self.memory)
+        return self._coordinator
+
+    @property
+    def executive_controller(self):
+        if self._executive_controller is None:
+            from modules.execution.executive_controller import ExecutiveController
+            self._executive_controller = ExecutiveController(self.memory, self.coordinator)
+        return self._executive_controller
 
     @llm.function_tool(description="Remember a preference or fact about the user for long-term storage")
     async def remember_preference(self, key: str, value: str) -> str:
@@ -736,9 +844,11 @@ class MemoryTools(JarvisToolset):
     async def store_memory(
         self, content: str, memory_type: str = "semantic", project: str = "general", importance: int = 7
     ) -> str:
-        row_id = await asyncio.to_thread(
+        row_id = await self.safe_execute(
             self.memory.store_memory, content, memory_type, project, importance, None
         )
+        if isinstance(row_id, str) and row_id.startswith("Error:"):
+            return row_id
         return (
             f"Memory stored (ID: {row_id}, type: {memory_type}, project: {project}, importance: {importance}/10)."
         )
@@ -751,16 +861,18 @@ class MemoryTools(JarvisToolset):
     async def search_typed_memory(
         self, query: str, memory_type: str = None, project: str = None
     ) -> str:
-        results = await asyncio.to_thread(
+        results = await self.safe_execute(
             self.memory.search_memories, query, memory_type, project, 5
         )
+        if isinstance(results, str) and results.startswith("Error:"):
+            return results
         if not results:
             return f"No typed memories found matching '{query}'."
         lines = [f"Found {len(results)} memories:"]
         for r in results:
             lines.append(
-                f"- [{r['memory_type']}][{r['project']}] (imp:{r['importance']}) "
-                f"{r['content'][:150]}..."
+                f"- [{r.get('memory_type', 'unknown')}][{r.get('project', 'unknown')}] (imp:{r.get('importance', 5)}) "
+                f"{r.get('content', '')[:150]}..."
             )
         return "\n".join(lines)
 
@@ -769,7 +881,8 @@ class MemoryTools(JarvisToolset):
                     "Use this to recall everything known about a project before starting work on it."
     )
     async def get_project_context(self, project_name: str) -> str:
-        return await asyncio.to_thread(self.memory.get_project_context, project_name)
+        res = await self.safe_execute(self.memory.get_project_context, project_name)
+        return str(res)
 
     @llm.function_tool(
         description="Store a fact about how two things are related in JARVIS knowledge graph. "
@@ -779,9 +892,10 @@ class MemoryTools(JarvisToolset):
     async def add_knowledge(
         self, entity_a: str, relation: str, entity_b: str
     ) -> str:
-        await asyncio.to_thread(self.memory.add_entity, entity_a, "concept", "")
-        await asyncio.to_thread(self.memory.add_entity, entity_b, "concept", "")
-        await asyncio.to_thread(self.memory.add_relationship, entity_a, relation, entity_b, 1.0)
+        await self.safe_execute(self.memory.add_entity, entity_a, "concept", "")
+        await self.safe_execute(self.memory.add_entity, entity_b, "concept", "")
+        res = await self.safe_execute(self.memory.add_relationship, entity_a, relation, entity_b, 1.0)
+        if isinstance(res, str) and res.startswith("Error:"): return res
         return f"Knowledge stored: {entity_a} → {relation} → {entity_b}."
 
     @llm.function_tool(
@@ -789,12 +903,15 @@ class MemoryTools(JarvisToolset):
                     "and lessons learned. Specify days (default 7) to look back."
     )
     async def get_agent_reflections(self, days: int = 7) -> str:
-        reflections = await asyncio.to_thread(self.memory.get_agent_reflections, days)
+        reflections = await self.safe_execute(self.memory.get_agent_reflections, days)
+        if isinstance(reflections, str) and reflections.startswith("Error:"): return reflections
         if not reflections:
-            return f"No reflections found in the past {days} days."
-        lines = [f"JARVIS reflections (last {days} days):"]
-        for r in reflections[:5]:
-            lines.append(f"\n[{r['created_at'][:10]}]\n{r['reflection'][:400]}")
+            return f"No reflections generated in the past {days} days."
+        lines = [f"Agent Reflections (Past {days} days):"]
+        for idx, r in enumerate(reflections, 1):
+            lines.append(f"{idx}. [{r.get('period', 'daily')}] {r.get('created_at', '')[:10]}")
+            lines.append(f"   {r.get('reflection', '')}")
+            lines.append("")
         return "\n".join(lines)
 
     @llm.function_tool(
@@ -937,50 +1054,88 @@ class Assistant(Agent):
     def __init__(self, memory: MemoryManager) -> None:
         base_prompt = JarvisBehavior.get_full_system_prompt()
         
-        context = memory.get_full_context()
-        if context:
-            base_prompt += "\n\n" + context
+        # Context is injected fast via lifecycle.build_context or skipped
+        # The prompt remains lightweight at start
             
         super().__init__(instructions=base_prompt)
 
 server = AgentServer()
+_cached_services = {}
 
 @server.rtc_session(agent_name=os.environ.get("AGENT_NAME", "jarvis"))
 async def my_agent(ctx: agents.JobContext):
-    # Initialize long-lived components
-    memory = MemoryManager()
-    security = SecurityManager()
-    world_state = WorldStateManager()
-    verification = VerificationEngine(world_state)
+    import time
+    start_t = time.perf_counter()
+    # Initialize long-lived components globally to avoid repeated schema parsing
+    global _cached_services
+    if not _cached_services:
+        memory = MemoryManager()
+        memory.initialize_minimal()
+        security = SecurityManager()
+        world_state = WorldStateManager()
+        verification = VerificationEngine(world_state)
 
-    tools = [
-        SystemTools(security=security, room=ctx.room),
-        WindowTools(security=security, room=ctx.room),
-        AppTools(security=security, room=ctx.room),
-        BrowserTools(security=security, room=ctx.room),
-        MediaTools(security=security, room=ctx.room),
-        KeyboardTools(security=security, room=ctx.room),
-        MouseTools(security=security, room=ctx.room),
-        FileTools(security=security, room=ctx.room),
-        TaskTools(security=security, room=ctx.room),
-        MemoryTools(memory=memory, security=security, room=ctx.room),
-        TaskPlannerTools(memory=memory),
-        VerificationTools(verification=verification, security=security, room=ctx.room)
-    ]
+        tools = [
+            SystemTools(security=security),
+            WindowTools(security=security),
+            AppTools(security=security),
+            BrowserTools(security=security),
+            MediaTools(security=security),
+            KeyboardTools(security=security),
+            MouseTools(security=security),
+            FileTools(security=security),
+            TaskTools(security=security),
+            MemoryTools(memory=memory, security=security),
+            TaskPlannerTools(memory=memory),
+            VerificationTools(verification=verification, security=security)
+        ]
+        
+        _cached_services = {
+            "memory": memory,
+            "tools": tools
+        }
+        
+    memory = _cached_services["memory"]
+    tools = _cached_services["tools"]
+    
+    # Inject active room context into cached tools dynamically
+    for tool in tools:
+        if hasattr(tool, "room"):
+            tool.room = ctx.room
 
-    session = AgentSession(
-        llm=google.beta.realtime.RealtimeModel(
-            model="models/gemini-2.5-flash-native-audio-preview-12-2025",
-            voice="Charon",
-            temperature=0.3
-        ),
-        tools=tools
-    )
-
-    await session.start(
-        room=ctx.room,
-        agent=Assistant(memory=memory),
-    )
+    import time
+    disconnect_count = 0
+    while disconnect_count < 10:
+        session = AgentSession(
+            llm=google.beta.realtime.RealtimeModel(
+                model="models/gemini-2.5-flash-native-audio-preview-12-2025",
+                voice="Charon",
+                temperature=0.3
+            ),
+            tools=tools
+        )
+        try:
+            start_session_t = time.time()
+            await session.start(
+                room=ctx.room,
+                agent=Assistant(memory=memory),
+            )
+            # Normal completion (client disconnected gracefully)
+            memory.log_session_disconnect(time.time() - start_session_t, "graceful_exit")
+            break
+        except Exception as e:
+            disconnect_count += 1
+            duration = time.time() - start_session_t
+            reason = str(e)
+            memory.log_session_disconnect(duration, reason)
+            
+            import logging
+            logger = logging.getLogger("JARVIS.Agent")
+            logger.error(f"Session disconnected due to error: {reason}. Reconnecting (Attempt {disconnect_count})...")
+            
+            await asyncio.sleep(2) # Backoff before reconnecting
+    import logging
+    logging.getLogger("JARVIS.Agent").info(f"Assistant startup completed in {time.perf_counter() - start_t:.3f}s")
 
     # Start WebRTC stats stream to frontend
     async def stats_publisher():

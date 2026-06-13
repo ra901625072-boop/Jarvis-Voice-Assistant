@@ -16,15 +16,7 @@ if exist venv\Scripts\activate.bat (
 :: Navigate to backend and start the server in a new window
 cd backend
 echo Launching backend server...
-start "Jarvis Server" cmd /k "title Jarvis Server && python main.py dev"
+start "Jarvis Server" cmd /k "title Jarvis Server && python main.py console"
 
-:: Wait a few seconds for the server to spin up
-echo Waiting for server to initialize...
-timeout /t 5 /nobreak > nul
-
-:: Open the default web browser to the frontend URL
-echo Opening Jarvis frontend in browser...
-start http://localhost:8000
-
-echo Done! You can close this window.
+echo Done! The backend is running in a new window.
 timeout /t 3 > nul

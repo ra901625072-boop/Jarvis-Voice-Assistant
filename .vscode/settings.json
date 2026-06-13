@@ -1,0 +1,19 @@
+{
+    "python.defaultInterpreterPath": "${workspaceFolder}/venv/Scripts/python.exe",
+    "python.terminal.activateEnvironment": true,
+    "terminal.integrated.cwd": "${workspaceFolder}/backend",
+    "terminal.integrated.profiles.windows": {
+        "PowerShell": {
+            "source": "PowerShell",
+            "args": ["-NoExit", "-Command", "if (Test-Path '${workspaceFolder}\\venv\\Scripts\\Activate.ps1') { & '${workspaceFolder}\\venv\\Scripts\\Activate.ps1' }"]
+        },
+        "Command Prompt": {
+            "path": [
+                "${env:windir}\\Sysnative\\cmd.exe",
+                "${env:windir}\\System32\\cmd.exe"
+            ],
+            "args": ["/K", "if exist \"${workspaceFolder}\\venv\\Scripts\\activate.bat\" call \"${workspaceFolder}\\venv\\Scripts\\activate.bat\""]
+        }
+    },
+    "terminal.integrated.defaultProfile.windows": "PowerShell"
+}

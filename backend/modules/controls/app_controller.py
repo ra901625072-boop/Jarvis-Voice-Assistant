@@ -55,6 +55,8 @@ class AppController:
         logger.info("AppController initialized.")
 
     def _index_common_apps(self):
+        import time
+        time.sleep(10)  # Delay indexing to prioritize JARVIS startup
         logger.info("Background indexing of common applications started.")
         common_apps = ["chrome", "edge", "calculator", "notepad", "spotify", "vscode"]
         for app in common_apps:
