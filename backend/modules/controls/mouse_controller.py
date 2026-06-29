@@ -17,6 +17,23 @@ except ImportError:
 logger = logging.getLogger("JARVIS.Mouse")
 
 class MouseController:
+    """
+    MouseController handles mouse navigation, clicks, drags, and screen capture.
+
+    SYSTEM PROMPT:
+    Use MouseController to click, double-click, right-click, drag, or scroll at specified screen coordinates. Ensure target coordinates are safe and within valid monitor regions.
+
+    SHORT DESCRIPTION:
+    Simulates mouse movement, clicks, scrolling, drags, and screenshot captures on the local system.
+
+    PROCESS:
+    1. Evaluates input screen coordinates against connected monitor dimensions to prevent out-of-bounds inputs.
+    2. Performs movements, clicks, double-clicks, right-clicks, scrolls, and drags via pyautogui.
+    3. Handles pyautogui.FailSafeException gracefully if the physical mouse cursor is moved to a screen corner.
+
+    FLOW:
+    Caller -> move()/click()/drag_to() -> _is_safe_coordinate() -> _safe_execute() -> pyautogui functions -> OS Input Queue -> Caller
+    """
     def __init__(self):
         pyautogui.FAILSAFE = True
         logger.info("MouseController initialized.")

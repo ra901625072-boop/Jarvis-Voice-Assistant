@@ -34,8 +34,23 @@ _IMMUNE_IMPORTANCE = 7
 
 class MemoryConsolidator:
     """
-    Consolidates and decays memory entries.
-    Receives a reference to the live MemoryManager to share its DB connection.
+    MemoryConsolidator manages daily memory tasks including conversation clustering, extractive summaries, and memory decay updates.
+
+    SYSTEM PROMPT:
+    Trigger MemoryConsolidator to run nightly compression runs to summarize yesterday's exchanges, delete obsolete facts, and decay low-value memories.
+
+    SHORT DESCRIPTION:
+    Orchestrates nightly consolidation of chat logs and applies exponential decay rules to long-term semantic records.
+
+    PROCESS:
+    1. Collects unconsolidated conversations from the database.
+    2. Clusters entries into semantic topic groupings.
+    3. Builds extractive summaries for each topic grouping and marks consolidated exchanges.
+    4. Computes exponential decay calculations on semantic records (using age and base importance weights) and deletes records failing threshold limits.
+    5. Deduplicates near-identical semantic statements.
+
+    FLOW:
+    Scheduler/Caller -> run() -> _consolidate_conversations() -> _apply_memory_decay() -> _deduplicate_semantic() -> Caller
     """
 
     def __init__(self, memory_manager):

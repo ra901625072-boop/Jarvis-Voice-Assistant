@@ -9,16 +9,34 @@ from typing import Optional
 from urllib.parse import quote_plus
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from modules.controls.google_search import GoogleSearch
 
 logger = logging.getLogger("JARVIS.Browser")
 
 class BrowserController:
+    """
+    BrowserController interacts with the web browser (Edge) using Playwright.
+
+    SYSTEM PROMPT:
+    Use BrowserController to open URLs, perform searches, manage tabs, and extract details from web pages. Make sure to ensure Edge CDP port 9222 debugging is active before attempting browser actions.
+
+    SHORT DESCRIPTION:
+    Provides programmatic controls for Microsoft Edge via Playwright CDP integration.
+
+    PROCESS:
+    1. Ensures Edge is running with remote debugging active on port 9222.
+    2. Connects to Edge over Chrome DevTools Protocol (CDP).
+    3. Exposes methods to open links, close tabs, run web searches, scrape web contents, switch tabs, control history navigation, click elements, fill forms, and parse page DOM.
+
+    FLOW:
+    Caller -> open_url()/search_live() -> _ensure_driver() -> Chromium connect_over_cdp -> Playwright Page navigation -> DOM/HTML scraping & parsing -> Caller
+    """
     def __init__(self):
         self.playwright = None
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
-        self._search_cache = {}
+        self.google_search = GoogleSearch(self)
         self._lock = threading.Lock()
         self._page_pool = []
         self._pool_lock = asyncio.Lock()
@@ -51,11 +69,15 @@ class BrowserController:
             import subprocess
             user_data_dir = os.path.join(tempfile.gettempdir(), "EdgeCDP")
             try:
-                subprocess.Popen([
-                    "cmd", "/c", "start", "msedge",
-                    "--remote-debugging-port=9222",
-                    f"--user-data-dir={user_data_dir}"
-                ])
+                await asyncio.to_thread(
+                    subprocess.run,
+                    [
+                        "cmd", "/c", "start", "msedge",
+                        "--remote-debugging-port=9222",
+                        f"--user-data-dir={user_data_dir}"
+                    ],
+                    check=False
+                )
                 await asyncio.sleep(2.0)
             except Exception as e:
                 logger.error(f"Failed to auto-launch Edge: {e}")
@@ -106,14 +128,21 @@ class BrowserController:
     async def open_url(self, url: str):
         url = self.normalize_url(url)
         await self._ensure_driver()
-        if not self.page:
+        
+        # Acquire page from browser pool
+        page = await self._get_pooled_page()
+        if not page:
             return "Error: Browser not ready."
+        
         try:
-            await self.page.goto(url, wait_until="domcontentloaded")
-            logger.info(f"Opened URL: {url}")
+            self.page = page
+            await page.bring_to_front()
+            await page.goto(url, wait_until="domcontentloaded")
+            logger.info(f"Opened URL using pooled page: {url}")
             return f"Successfully opened {url}."
         except Exception as e:
             logger.error(f"Failed to open URL: {e}")
+            await self._return_pooled_page(page)
             return f"Error opening URL: {e}"
 
     async def close_browser(self):
@@ -123,6 +152,8 @@ class BrowserController:
                 self.browser = None
                 self.context = None
                 self.page = None
+                async with self._pool_lock:
+                    self._page_pool.clear()
                 logger.info("Browser closed.")
         except Exception as e:
             logger.error(f"Failed to close browser: {e}")
@@ -145,17 +176,23 @@ class BrowserController:
                     pages_to_close.append(p)
                     
             for p in pages_to_close:
-                await p.close()
+                await self._return_pooled_page(p)
                 closed = True
                 
             if self.context.pages:
-                self.page = self.context.pages[-1]
-                await self.page.bring_to_front()
+                # Filter out closed or pooled blank pages to focus the active user tab
+                visible_pages = [p for p in self.context.pages if p.url != "about:blank" and not p.is_closed()]
+                if visible_pages:
+                    self.page = visible_pages[-1]
+                    await self.page.bring_to_front()
+                else:
+                    self.page = self.context.pages[-1]
+                    await self.page.bring_to_front()
             else:
                 self.page = None
                 
             if closed:
-                logger.info(f"Closed tab matching: {domain_or_title}")
+                logger.info(f"Closed and returned tab matching: {domain_or_title}")
             else:
                 logger.warning(f"Could not find tab matching: {domain_or_title}")
         except Exception as e:
@@ -164,104 +201,50 @@ class BrowserController:
         return closed
 
     async def search(self, query: str):
-        query_key = f"google:{query.lower().strip()}"
-        now = time.time()
-        
-        if query_key in self._search_cache:
-            last_time = self._search_cache[query_key]
-            if now - last_time < 300:
-                logger.info(f"Google search for '{query}' is cached. Skipping reload.")
-                return "Displayed cached search."
-                
-        self._search_cache[query_key] = now
-        url = f"https://www.google.com/search?q={quote_plus(query)}"
-        return await self.open_url(url)
-
-    async def _extract_generic_links(self) -> list:
-        results = []
-        try:
-            headings = await self.page.query_selector_all("h3")
-            for h in headings:
-                try:
-                    title = await h.text_content()
-                    if not title: continue
-                    
-                    # Find closest anchor
-                    anchor = await h.evaluate_handle("(node) => node.closest('a') || node.querySelector('a')")
-                    if anchor:
-                        try:
-                            url = await anchor.get_attribute("href")
-                            if url and url.startswith("http"):
-                                if not any(r["url"] == url for r in results):
-                                    results.append({
-                                        "title": title,
-                                        "url": url,
-                                        "snippet": ""  # Snippet extraction simplified for brevity
-                                    })
-                        finally:
-                            await anchor.dispose()  # Release JS heap reference
-                except Exception:
-                    continue
-        except Exception as e:
-            logger.error(f"Error parsing generic links: {e}")
-        finally:
-            if 'headings' in locals():
-                for h in headings:
-                    try:
-                        await h.dispose()
-                    except Exception:
-                        pass
-        return results
+        return await self.google_search.search(query)
 
     async def search_live(self, query: str, num_results: int = 3, engine: str = "google"):
-        logger.info(f"Performing live search via Playwright: {query}")
-        await self._ensure_driver()
-        if not self.page:
-            return "Error: WebDriver is not initialized."
-            
-        try:
-            if engine == "wikipedia":
-                url = f"https://en.wikipedia.org/w/index.php?search={quote_plus(query)}"
-            else:
-                url = f"https://www.google.com/search?q={quote_plus(query)}"
-            await self.page.goto(url, wait_until="domcontentloaded")
-            await asyncio.sleep(1) # wait for dynamic content
-            
-            results = await self._extract_generic_links()
-            if not results:
-                return "Failed to retrieve search results."
-                
-            top_results = results[:num_results]
-            aggregated_content = f"Search Results for '{query}':\n\n"
-            
-            for i, res in enumerate(top_results, 1):
-                aggregated_content += f"[{i}] TITLE: {res['title']}\n    URL: {res['url']}\n"
-                
-                try:
-                    # Use a pooled page to avoid new_page() context overhead
-                    pooled_page = await self._get_pooled_page()
-                    await pooled_page.goto(res['url'], wait_until="domcontentloaded", timeout=10000)
-                    
-                    # Extract main text
-                    page_text = await pooled_page.evaluate("document.body.innerText")
-                    cleaned_text = " ".join([l.strip() for l in page_text.split("\n") if l.strip()])
-                    truncated_text = cleaned_text[:2000] + ("..." if len(cleaned_text) > 2000 else "")
-                    aggregated_content += f"    CONTENT: {truncated_text}\n\n"
-                    
-                    await self._return_pooled_page(pooled_page)
-                except Exception as e:
-                    aggregated_content += f"    CONTENT: [Failed to extract page content: {e}]\n\n"
-                    if 'pooled_page' in locals() and not pooled_page.is_closed():
-                        await pooled_page.close()
-            
-            await self.page.bring_to_front()
-            return aggregated_content
-        except Exception as e:
-            return f"Search error: {e}"
+        return await self.google_search.search_live(query, num_results, engine)
 
     async def search_youtube(self, query: str):
         url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
         return await self.open_url(url)
+
+    async def _youtube_ad_watcher(self, page):
+        logger.info("Starting YouTube ad watcher background task...")
+        # Monitor the video for up to 10 minutes (300 iterations * 2s)
+        for _ in range(300):
+            try:
+                if page.is_closed():
+                    break
+                if "youtube.com" not in page.url:
+                    break
+                
+                # Check standard selectors for Skip Ad button on YouTube
+                skip_selectors = [
+                    ".ytp-ad-skip-button",
+                    ".ytp-ad-skip-button-modern",
+                    ".ytp-ad-skip-button-text",
+                    ".ytp-ad-skip-button-container",
+                    ".ytp-skip-ad-button",
+                    "button.ytp-ad-skip-button"
+                ]
+                
+                for selector in skip_selectors:
+                    btn = await page.query_selector(selector)
+                    if btn:
+                        is_visible = await btn.is_visible()
+                        if is_visible:
+                            logger.info(f"YouTube Ad Watcher: Found skip button using selector '{selector}'. Clicking it!")
+                            await btn.click()
+                            await asyncio.sleep(1)
+                            break
+                        await btn.dispose()
+            except Exception as e:
+                # Page closed or navigation occurred, break or ignore safely
+                logger.debug(f"YouTube Ad Watcher update check failed/ignored: {e}")
+            await asyncio.sleep(2)
+        logger.info("YouTube ad watcher background task finished.")
 
     async def play_youtube(self, query: str):
         await self.search_youtube(query)
@@ -272,7 +255,9 @@ class BrowserController:
                 try:
                     await video.click()
                     logger.info(f"Playing YouTube video for query: {query}")
-                    return f"Playing first result for {query}"
+                    # Launch ad watcher in background context
+                    asyncio.create_task(self._youtube_ad_watcher(self.page))
+                    return f"Playing first result for {query} and auto-skipping ads in the background."
                 finally:
                     await video.dispose()
             return "Could not find video title to click."

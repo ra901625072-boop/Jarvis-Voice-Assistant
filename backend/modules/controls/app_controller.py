@@ -11,6 +11,24 @@ from rapidfuzz import fuzz
 logger = logging.getLogger("JARVIS.App")
 
 class AppController:
+    """
+    AppController manages launching, listing, matching, and closing applications on the host OS.
+
+    SYSTEM PROMPT:
+    Use AppController to control desktop application lifecycles. Ensure to search or resolve the app name fuzzy aliases first. Never assume an app path exists without verification.
+
+    SHORT DESCRIPTION:
+    Manages local Windows OS application lifecycles including detection, startup, and termination.
+
+    PROCESS:
+    1. Indexes common applications asynchronously on initialization.
+    2. Resolves application queries to absolute executable paths using known aliases, cached dynamic paths, Start Menu link searches via PowerShell, and fallback Program Files scans.
+    3. Launches applications natively or via cmd protocols.
+    4. Terminates applications by process name using exact, partial, or fuzzy matching via psutil.
+
+    FLOW:
+    Caller -> open_app()/close_app() -> _find_app_path() -> subprocess (PowerShell) / os.startfile() / psutil.Process.terminate() -> Caller
+    """
     def __init__(self):
         # A simple mapping of common app names to executable names/paths
         self.app_aliases = {
@@ -161,7 +179,7 @@ class AppController:
             except FileNotFoundError:
                 # Fallback to cmd start for UWP apps / protocols
                 safe_path = re.sub(r'[&|;<>]', '', target_path)
-                subprocess.Popen(["cmd", "/c", "start", "", safe_path])
+                subprocess.run(["cmd", "/c", "start", "", safe_path], check=False)
                 
             return True
         except Exception as e:

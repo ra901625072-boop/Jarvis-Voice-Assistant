@@ -6,7 +6,25 @@ logger = logging.getLogger("JARVIS.RecoveryEngine")
 
 class RecoveryEngine:
     """
-    Attempts deterministic recovery strategies for common failures.
+    RecoveryEngine analyzes task execution errors and attempts predefined deterministic recoveries.
+
+    SYSTEM PROMPT:
+    Call RecoveryEngine when a subtask fails to determine if a deterministic fallback action exists before attempting LLM replanning.
+
+    SHORT DESCRIPTION:
+    Analyzes task failures against the system world state to return quick-fix recovery instructions.
+
+    PROCESS:
+    1. Extracts failed task keywords and error patterns.
+    2. Queries WorldStateManager to inspect current operating system processes and open windows.
+    3. Matches conditions against predefined rules:
+       - Browser crash/timeout: restart or focus browser process.
+       - File locked/permission: wait 3 seconds and retry.
+       - Window missing: query exact open window titles.
+    4. Returns specific recovery directives or None if no predefined strategy matches.
+
+    FLOW:
+    Caller -> attempt_recovery() -> WorldStateManager.get_state_snapshot() -> rule matching -> recovery directive / None -> Caller
     """
     def __init__(self, world_state: WorldStateManager):
         self.world_state = world_state
@@ -40,6 +58,17 @@ class RecoveryEngine:
             
         # Strategy 3: Window missing
         if "window" in task_lower and "not found" in error_lower:
-            return "Recovery Action: Window not found. Use the world state manager to list actual open windows to find the exact title, then retry."
+            return "Recovery Action: Window not found. Use the world state manager to list active open windows to find the exact title, then retry."
+
+        # Strategy 4: Click or button target not found / element missing
+        if any(keyword in task_lower for keyword in ["click", "button", "skip", "select", "find", "locate"]):
+            if any(err in error_lower for err in ["not found", "missing", "element", "unable to locate", "failed to find", "false"]):
+                logger.info("Recovery Strategy: Attempting mouse scroll recovery.")
+                return "Recovery Action: Scroll down to bring visual target into view, then retry."
+
+        # Strategy 5: YouTube ad skip or general overlay blocking
+        if "skip" in task_lower and ("ad" in task_lower or "youtube" in task_lower):
+            logger.info("Recovery Strategy: YouTube ad or skip target recovery via keyboard shortcuts.")
+            return "Recovery Action: Keyboard shortcut Enter to bypass blocking elements."
 
         return None

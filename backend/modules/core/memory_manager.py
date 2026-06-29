@@ -30,6 +30,7 @@ import json
 import math
 import logging
 import threading
+import asyncio
 import shutil
 import time
 import schedule
@@ -37,6 +38,15 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
 from modules.core.memory_scorer import MemoryScorer, MemoryImportance
+from modules.core.memory_lifecycle import MemoryLifecycle
+from modules.core.memory_consolidator import MemoryConsolidator
+from modules.core.reflection_engine import ReflectionEngine
+
+try:
+    import chromadb
+    _CHROMA_AVAILABLE = True
+except ImportError:
+    _CHROMA_AVAILABLE = False
 
 logger = logging.getLogger("JARVIS.Memory")
 
@@ -46,6 +56,42 @@ _LAZY_COMMIT_THRESHOLD = 5
 # ============================================================
 # Helper
 # ============================================================
+
+class ThreadLocalDBs:
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self._local = threading.local()
+        self._all_conns = []
+        self._lock = threading.Lock()
+
+    def get_conn(self) -> sqlite3.Connection:
+        if not hasattr(self._local, "conn"):
+            conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA wal_autocheckpoint=1000")
+            self._local.conn = conn
+            with self._lock:
+                self._all_conns.append(conn)
+        return self._local.conn
+
+    def __getitem__(self, key):
+        return self.get_conn()
+
+    def values(self):
+        return [self.get_conn()]
+
+    def clear(self):
+        with self._lock:
+            for conn in self._all_conns:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._all_conns.clear()
+        if hasattr(self._local, "conn"):
+            del self._local.conn
 
 def _safe_alter(conn: sqlite3.Connection, table: str, col: str, col_def: str) -> None:
     """Add a column to a table only if it does not already exist."""
@@ -61,23 +107,32 @@ def _safe_alter(conn: sqlite3.Connection, table: str, col: str, col_def: str) ->
 
 
 import time
+import threading as _threading
 from functools import wraps
 
 def ttl_cache(maxsize=100, ttl=300):
+    """Thread-safe TTL cache decorator with LRU eviction."""
     cache = {}
+    _lock = _threading.Lock()
     def decorator(func):
         @wraps(func)
         def wrapper(self, *args, **kwargs):
             key = str(args) + str(kwargs)
             now = time.time()
-            if key in cache:
-                result, timestamp = cache[key]
-                if now - timestamp < ttl:
-                    return result
+            with _lock:
+                if key in cache:
+                    result, timestamp = cache[key]
+                    if now - timestamp < ttl:
+                        return result
+                    else:
+                        del cache[key]
             result = func(self, *args, **kwargs)
-            cache[key] = (result, now)
-            if len(cache) > maxsize:
-                cache.pop(next(iter(cache)))
+            with _lock:
+                cache[key] = (result, now)
+                # LRU eviction: remove oldest entry when over max size
+                if len(cache) > maxsize:
+                    oldest_key = next(iter(cache))
+                    del cache[oldest_key]
             return result
         return wrapper
     return decorator
@@ -85,7 +140,22 @@ def ttl_cache(maxsize=100, ttl=300):
 class MemoryManager:
 
     """
-    Orchestrates all JARVIS memory subsystems.
+    MemoryManager orchestrates all JARVIS memory subsystems and databases.
+
+    SYSTEM PROMPT:
+    Initialize and query MemoryManager to write conversation logs, manage preferences, retrieve hybrid search context, and coordinate memory lifecycles.
+
+    SHORT DESCRIPTION:
+    Centralized controller for SQLite tables, ChromaDB vector stores, and Phase 5 cognitive memory components.
+
+    PROCESS:
+    1. Saves conversation logs (role, content, importance, namespace).
+    2. Synchronizes data writes across SQLite memory.db and ChromaDB collections.
+    3. Exposes interfaces for preferences, working memories, entity relationships (Knowledge Graph), and task-state persistence.
+    4. Orchestrates nightly maintenance routines including database backups and consolidation.
+
+    FLOW:
+    Caller -> log_conversation() / get_full_context() -> MemoryLifecycle -> Gate / Resolver -> SQLite / ChromaDB -> Caller
 
     Public API (backward-compatible layer)
     ----------------------------------------
@@ -137,19 +207,9 @@ class MemoryManager:
         self._pending_commits = 0
         self._scorer          = MemoryScorer()
 
-        # Single shared SQLite connection (WAL mode)
+        # Thread-local SQLite connection (WAL mode)
         db_path     = os.path.join(self.memory_dir, "memory.db")
-        shared_conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.dbs    = {
-            "conversations": shared_conn,
-            "user":          shared_conn,
-            "tasks":         shared_conn,
-        }
-
-        with self._lock:
-            shared_conn.execute("PRAGMA journal_mode=WAL")
-            shared_conn.execute("PRAGMA synchronous=NORMAL")
-            shared_conn.execute("PRAGMA foreign_keys=ON")
+        self.dbs    = ThreadLocalDBs(db_path)
 
         # ChromaDB — lazy initialisation
         self._vector_checked  = False
@@ -159,8 +219,8 @@ class MemoryManager:
         self.workflow_collection = None
         self.memory_collection   = None
 
-        # Phase 5 — lazy-init cognitive subsystems via lifecycle
-        self._lifecycle: Optional[Any] = None
+        # Phase 5 — initialize cognitive subsystems via lifecycle directly (no lazy load)
+        self.lifecycle = MemoryLifecycle(self)
 
         # Scheduler
         schedule.every().day.at("03:00").do(self.backup_databases)
@@ -181,6 +241,43 @@ class MemoryManager:
         threading.Thread(target=self._delayed_seed_self_model, daemon=True).start()
         # Warm up ChromaDB execution provider models in background
         threading.Thread(target=self._warmup_vector_store, daemon=True).start()
+
+    def start_async_writer(self, loop) -> None:
+        """Starts the background worker task that consumes write operations from the queue."""
+        with self._lock:
+            if hasattr(self, "_writer_task") and self._writer_task and not self._writer_task.done():
+                return
+            self._write_queue = asyncio.Queue()
+            self._writer_task = loop.create_task(self._async_writer_loop())
+            logger.info("Async Memory Writer task started successfully.")
+
+    async def _async_writer_loop(self):
+        while True:
+            try:
+                func, args, kwargs = await self._write_queue.get()
+                # Run the blocking database write in a separate thread
+                await asyncio.to_thread(func, *args, **kwargs)
+                self._write_queue.task_done()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in background memory writer loop: {e}")
+
+    def enqueue_write(self, func, *args, **kwargs):
+        """Enqueues a write operation to be processed in the background, falling back to sync write if no loop exists."""
+        if hasattr(self, "_write_queue"):
+            try:
+                loop = asyncio.get_running_loop()
+                loop.call_soon_threadsafe(self._write_queue.put_nowait, (func, args, kwargs))
+                return
+            except RuntimeError:
+                pass
+        
+        # Fallback to direct synchronous execution
+        try:
+            func(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Fallback sync write failed: {e}")
 
     def _delayed_seed_self_model(self) -> None:
         import time
@@ -218,47 +315,46 @@ class MemoryManager:
         with self._lock:
             if self._vector_checked:
                 return self._vector_enabled
-            try:
-                import chromadb
-                self.chroma_client = chromadb.PersistentClient(path=self.vector_dir)
-                self.collection = self.chroma_client.get_or_create_collection(
-                    name="conversations"
-                )
-                self.workflow_collection = self.chroma_client.get_or_create_collection(
-                    name="workflows"
-                )
-                self.memory_collection = self.chroma_client.get_or_create_collection(
-                    name="memories"
-                )
-                self._vector_enabled = True
-                logger.info("ChromaDB initialized (conversations, workflows, memories).")
-            except ImportError:
+            if _CHROMA_AVAILABLE:
+                try:
+                    from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
+                    embedding_fn = ONNXMiniLM_L6_V2(preferred_providers=["CPUExecutionProvider"])
+                    
+                    self.chroma_client = chromadb.PersistentClient(path=self.vector_dir)
+                    self.collection = self.chroma_client.get_or_create_collection(
+                        name="conversations",
+                        embedding_function=embedding_fn
+                    )
+                    self.workflow_collection = self.chroma_client.get_or_create_collection(
+                        name="workflows",
+                        embedding_function=embedding_fn
+                    )
+                    self.memory_collection = self.chroma_client.get_or_create_collection(
+                        name="memories",
+                        embedding_function=embedding_fn
+                    )
+                    self._vector_enabled = True
+                    logger.info("ChromaDB initialized (conversations, workflows, memories).")
+                except Exception as e:
+                    logger.error(f"ChromaDB init failed: {e}")
+                    self._vector_enabled = False
+                finally:
+                    self._vector_checked = True
+            else:
                 logger.warning("chromadb not installed. Semantic search disabled.")
                 self._vector_enabled = False
-            except Exception as e:
-                logger.error(f"ChromaDB init failed: {e}")
-                self._vector_enabled = False
-            finally:
                 self._vector_checked = True
         return self._vector_enabled
 
     def _commit(self, force: bool = False) -> None:
-        """Lazy commit helper — commits every N writes or when forced."""
-        self._pending_commits += 1
-        if force or self._pending_commits >= _LAZY_COMMIT_THRESHOLD:
-            next(iter(self.dbs.values())).commit()
-            self._pending_commits = 0
+        """Lazy commit helper — commits every write immediately when thread-local connections are used."""
+        next(iter(self.dbs.values())).commit()
+        self._pending_commits = 0
 
     def _now(self) -> str:
         return datetime.now().isoformat()
 
-    @property
-    def lifecycle(self):
-        """Lazy-initialize the MemoryLifecycle orchestrator."""
-        if self._lifecycle is None:
-            from modules.core.memory_lifecycle import MemoryLifecycle
-            self._lifecycle = MemoryLifecycle(self)
-        return self._lifecycle
+
 
     # ------------------------------------------------------------------ #
     # Schema initialisation                                                #
@@ -381,6 +477,32 @@ class MemoryManager:
             """)
             c.execute("CREATE INDEX IF NOT EXISTS idx_sem_project ON semantic_memories(project)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_sem_importance ON semantic_memories(importance)")
+
+            c.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS semantic_memories_fts
+                USING fts5(content, content='semantic_memories', content_rowid='id')
+            """)
+            for trig_sql in [
+                """CREATE TRIGGER IF NOT EXISTS semantic_memories_ai
+                   AFTER INSERT ON semantic_memories BEGIN
+                     INSERT INTO semantic_memories_fts(rowid, content) VALUES (new.id, new.content);
+                   END;""",
+                """CREATE TRIGGER IF NOT EXISTS semantic_memories_ad
+                   AFTER DELETE ON semantic_memories BEGIN
+                     INSERT INTO semantic_memories_fts(semantic_memories_fts, rowid, content)
+                     VALUES ('delete', old.id, old.content);
+                   END;""",
+                """CREATE TRIGGER IF NOT EXISTS semantic_memories_au
+                   AFTER UPDATE ON semantic_memories BEGIN
+                     INSERT INTO semantic_memories_fts(semantic_memories_fts, rowid, content)
+                     VALUES ('delete', old.id, old.content);
+                     INSERT INTO semantic_memories_fts(rowid, content) VALUES (new.id, new.content);
+                   END;""",
+            ]:
+                try:
+                    c.execute(trig_sql)
+                except Exception:
+                    pass
 
             c.execute("""
                 CREATE TABLE IF NOT EXISTS episodic_memories (
@@ -568,6 +690,32 @@ class MemoryManager:
             _safe_alter(conn, "relationships", "source_memory",  "INTEGER")
             _safe_alter(conn, "relationships", "last_verified",  "TEXT")
 
+            # Redesign Phase 3 dynamic migrations
+            _safe_alter(conn, "episodic_memories", "goal_id", "INTEGER REFERENCES active_goals(id) ON DELETE SET NULL")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_ep_goal_id ON episodic_memories(goal_id)")
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_proc_skill ON procedural_memories(skill_name)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_sem_project_super ON semantic_memories(project, superseded)")
+
+            # Vision System Caching and Logs Schema
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS vision_cache (
+                    image_hash TEXT,
+                    prompt TEXT,
+                    result TEXT,
+                    created_at TEXT,
+                    PRIMARY KEY (image_hash, prompt)
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS vision_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT,
+                    app TEXT,
+                    activity TEXT,
+                    summary TEXT
+                )
+            """)
+
             conn.commit()
             logger.info("All memory tables (Phase 4 + Phase 5) initialised.")
 
@@ -578,12 +726,12 @@ class MemoryManager:
     # ── Conversation logging ──────────────────────────────────────────── #
 
     def log_conversation(self, role: str, content: str) -> None:
-        """Log a conversation turn. Scores, gates, resolves conflicts, then stores."""
-        import time
-        start_t = time.perf_counter()
-        
-        timestamp    = self._now()
-        meta         = self._scorer.analyze(content, role)
+        """Log a conversation turn. Offloaded to background queue to prevent event loop delay."""
+        timestamp = self._now()
+        meta = self._scorer.analyze(content, role)
+        self.enqueue_write(self._sync_log_conversation, role, content, timestamp, meta)
+
+    def _sync_log_conversation(self, role: str, content: str, timestamp: str, meta: dict) -> None:
         importance   = meta["importance"]
         memory_type  = meta["memory_type"]
         project      = meta["project"]
@@ -617,7 +765,6 @@ class MemoryManager:
                 )
             except Exception as e:
                 logger.error(f"Lifecycle on_new_message failed, falling back: {e}")
-                # Fallback: direct store if lifecycle fails
                 stored = False
                 if importance >= MemoryImportance.MEDIUM:
                     self._store_typed_memory(content, memory_type, project, importance, tags, timestamp)
@@ -625,25 +772,21 @@ class MemoryManager:
 
         # Vector store with rich metadata (only if important enough)
         if importance >= MemoryImportance.MEDIUM and self._ensure_vector_client():
-            def _bg_vector_add():
-                try:
-                    self.collection.add(
-                        documents=[content],
-                        metadatas=[{
-                            "role":        role,
-                            "importance":  importance,
-                            "memory_type": memory_type,
-                            "project":     project,
-                            "tags":        tags,
-                            "timestamp":   timestamp,
-                        }],
-                        ids=[str(inserted_id)],
-                    )
-                except Exception as e:
-                    logger.error(f"Vector insert failed: {e}")
-            threading.Thread(target=_bg_vector_add, daemon=True).start()
-            
-        logger.info(f"Memory write: {time.perf_counter() - start_t:.3f}s")
+            try:
+                self.collection.add(
+                    documents=[content],
+                    metadatas=[{
+                        "role":        role,
+                        "importance":  meta["importance"],
+                        "memory_type": meta["memory_type"],
+                        "project":     meta["project"],
+                        "tags":        meta["tags"],
+                        "timestamp":   timestamp,
+                    }],
+                    ids=[str(inserted_id)],
+                )
+            except Exception as e:
+                logger.error(f"Vector insert failed: {e}")
 
     def get_recent_history(self, limit: int = 10) -> list:
         with self._lock:
@@ -806,6 +949,13 @@ class MemoryManager:
             self.lifecycle.run_nightly()
         except Exception as e:
             logger.error(f"Nightly maintenance error: {e}", exc_info=True)
+            
+        # Force WAL checkpoint to reclaim space
+        with self._lock:
+            conn = self.dbs.get_conn()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.commit()
+        logger.info("WAL checkpoint completed.")
 
     def close(self) -> None:
         if hasattr(self, "_stop_event"):
@@ -1101,7 +1251,16 @@ class MemoryManager:
         exec_time_ms: int = 0,
         error: str = None,
     ) -> None:
-        """Record outcome of a workflow execution for adaptive learning."""
+        """Record outcome of a workflow execution for adaptive learning (non-blocking)."""
+        self.enqueue_write(self._sync_update_workflow_stats, goal_pattern, success, exec_time_ms, error)
+
+    def _sync_update_workflow_stats(
+        self,
+        goal_pattern: str,
+        success: bool,
+        exec_time_ms: int,
+        error: str,
+    ) -> None:
         ts = self._now()
         with self._lock:
             existing = self.dbs["conversations"].execute(
@@ -1178,7 +1337,16 @@ class MemoryManager:
         history: Optional[List],
         screen_ctx: Optional[Dict],
     ) -> None:
-        """Checkpoint the current agent state to SQLite for crash recovery."""
+        """Checkpoint the current agent state to SQLite for crash recovery (non-blocking)."""
+        self.enqueue_write(self._sync_persist_agent_state, goal, plan_dict, history, screen_ctx)
+
+    def _sync_persist_agent_state(
+        self,
+        goal: Optional[str],
+        plan_dict: Optional[Dict],
+        history: Optional[List],
+        screen_ctx: Optional[Dict],
+    ) -> None:
         ts = self._now()
         with self._lock:
             self.dbs["conversations"].execute(
@@ -1213,46 +1381,7 @@ class MemoryManager:
             "saved_at":       row[4],
         }
 
-    # ── Nightly maintenance ───────────────────────────────────────────── #
 
-    def run_nightly_maintenance(self) -> None:
-        """
-        Called nightly at 03:05.
-        1. Consolidate yesterday's conversations into summaries.
-        2. Apply memory decay to low-importance semantic memories.
-        3. Generate a daily reflection.
-        4. Purge expired working memory entries.
-        5. Prune old consolidated conversations.
-        """
-        logger.info("Starting nightly memory maintenance...")
-        try:
-            from modules.core.memory_consolidator import MemoryConsolidator
-            from modules.core.reflection_engine   import ReflectionEngine
-
-            consolidator = MemoryConsolidator(self)
-            consolidator.run()
-
-            reflector = ReflectionEngine(self)
-            reflector.run()
-
-        except ImportError as e:
-            logger.warning(f"Consolidation/reflection module not yet available: {e}")
-        except Exception as e:
-            logger.error(f"Nightly maintenance error: {e}")
-
-        # Purge expired working memory
-        self._purge_working_memory()
-
-        # Prune consolidated old conversations
-        cutoff = (datetime.now() - timedelta(days=7)).isoformat()
-        with self._lock:
-            self.dbs["conversations"].execute(
-                "DELETE FROM conversations WHERE consolidated = 1 AND timestamp < ?",
-                (cutoff,),
-            )
-            self._commit(force=True)
-
-        logger.info("Nightly maintenance complete.")
 
     # ================================================================== #
     # PRIVATE HELPERS                                                      #
@@ -1483,6 +1612,107 @@ class MemoryManager:
                 (now,),
             )
             self._commit()
+
+    # ── Vision Cache & Memory (On-demand) ────────────────────────────────── #
+
+    def get_cached_vision(self, image_hash: str, prompt: str) -> Optional[str]:
+        """Retrieve cached vision output if it exists."""
+        try:
+            with self._lock:
+                cursor = self.dbs["conversations"].execute(
+                    "SELECT result FROM vision_cache WHERE image_hash = ? AND prompt = ?",
+                    (image_hash, prompt)
+                )
+                row = cursor.fetchone()
+                if row:
+                    return row[0]
+        except Exception as e:
+            logger.error(f"Failed to read from vision_cache: {e}")
+        return None
+
+    def set_cached_vision(self, image_hash: str, prompt: str, result: str) -> None:
+        """Insert or replace a vision cache entry."""
+        try:
+            now = self._now()
+            with self._lock:
+                self.dbs["conversations"].execute(
+                    "INSERT OR REPLACE INTO vision_cache (image_hash, prompt, result, created_at) VALUES (?, ?, ?, ?)",
+                    (image_hash, prompt, result, now)
+                )
+                self._commit()
+        except Exception as e:
+            logger.error(f"Failed to write to vision_cache: {e}")
+
+    def save_vision_summary(self, app: str, activity: str, summary: str) -> None:
+        """Save a summary of on-demand screen activity."""
+        try:
+            now = self._now()
+            with self._lock:
+                self.dbs["conversations"].execute(
+                    "INSERT INTO vision_memory (timestamp, app, activity, summary) VALUES (?, ?, ?, ?)",
+                    (now, app, activity, summary)
+                )
+                self._commit()
+        except Exception as e:
+            logger.error(f"Failed to write to vision_memory: {e}")
+
+    def get_recent_vision_summaries(self, limit: int = 5) -> list:
+        """Retrieve recent vision summaries."""
+        try:
+            with self._lock:
+                cursor = self.dbs["conversations"].execute(
+                    "SELECT timestamp, app, activity, summary FROM vision_memory ORDER BY id DESC LIMIT ?",
+                    (limit,)
+                )
+                rows = cursor.fetchall()
+            return [
+                {"timestamp": r[0], "app": r[1], "activity": r[2], "summary": r[3]}
+                for r in rows
+            ]
+        except Exception as e:
+            logger.error(f"Failed to get vision summaries: {e}")
+            return []
+
+    def cleanup_old_vision_logs(self, days: int = 30) -> None:
+        """Prunes vision_memory and vision_cache tables of entries older than specified days."""
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        try:
+            with self._lock:
+                self.dbs["conversations"].execute(
+                    "DELETE FROM vision_memory WHERE timestamp < ?",
+                    (cutoff,),
+                )
+                self.dbs["conversations"].execute(
+                    "DELETE FROM vision_cache WHERE created_at < ?",
+                    (cutoff,),
+                )
+                self._commit(force=True)
+            logger.info(f"Cleaned up vision logs and cache older than {days} days.")
+        except Exception as e:
+            logger.error(f"Failed to cleanup old vision logs: {e}")
+
+    def query_lessons_learned(self, topic: str, limit: int = 3) -> list:
+        """Query lessons learned from database in a thread-safe manner."""
+        try:
+            with self._lock:
+                if topic:
+                    return self.dbs["conversations"].execute(
+                        """SELECT lesson, occurrence_count 
+                           FROM lessons_learned 
+                           WHERE lesson LIKE ? OR source_pattern LIKE ?
+                           ORDER BY importance DESC LIMIT ?""",
+                        (f"%{topic}%", f"%{topic}%", limit)
+                    ).fetchall()
+                else:
+                    return self.dbs["conversations"].execute(
+                        """SELECT lesson, occurrence_count 
+                           FROM lessons_learned 
+                           ORDER BY importance DESC LIMIT ?""",
+                        (limit,)
+                    ).fetchall()
+        except Exception as e:
+            logger.error(f"Failed to query lessons_learned: {e}")
+            return []
 
 
 import re  # ensure re is available for _build_kg_context

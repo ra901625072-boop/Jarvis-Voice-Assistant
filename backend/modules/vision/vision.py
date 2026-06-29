@@ -123,7 +123,7 @@ Rules:
 # =========================
 
 def _generate_from_image(
-    image_path: str,
+    image_path,
     prompt: str,
     temperature: float = 0.2,
     max_tokens: int = 1000,
@@ -132,6 +132,7 @@ def _generate_from_image(
     """
     Send an image and prompt to Gemini using the new google-genai SDK.
     Uses persistent sqlite cache if screen_hash is provided.
+    image_path can be a string file path or a PIL Image object.
     """
 
     if not client:
@@ -144,35 +145,58 @@ def _generate_from_image(
             logger.info("Vision cache hit.")
             return cached
 
-    path = Path(image_path)
-
-    if not path.exists():
-        raise FileNotFoundError(f"Image not found: {image_path}")
-
     # Apply Rate Limiting
     while not _rate_limiter.acquire():
         logger.warning("Vision API rate limit reached. Waiting...")
         time.sleep(2)
 
     try:
-        # Read the image as raw PNG bytes — the new google-genai SDK does NOT
-        # accept a PIL Image object directly; it requires a typed Part.
-        with Image.open(path) as pil_image:
-            buf = io.BytesIO()
-            pil_image.save(buf, format="PNG")
-            image_bytes = buf.getvalue()
+        # Check if the image_path is a PIL Image or file path
+        if isinstance(image_path, Image.Image):
+            pil_image = image_path
+        else:
+            path = Path(image_path)
+            if not path.exists():
+                raise FileNotFoundError(f"Image not found: {image_path}")
+            # Open image from disk
+            pil_image = Image.open(path)
 
-        image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/png")
+        buf = io.BytesIO()
+        # Save as JPEG with quality=85 for speed and low bandwidth usage
+        pil_image.save(buf, format="JPEG", quality=85)
+        image_bytes = buf.getvalue()
+
+        if not isinstance(image_path, Image.Image):
+            pil_image.close()
+
+        image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
         text_part  = types.Part.from_text(text=prompt)
 
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=[image_part, text_part],
-            config=types.GenerateContentConfig(
-                temperature=temperature,
-                max_output_tokens=max_tokens,
-            ),
-        )
+        models_to_try = ["gemini-3.5-flash", "gemini-2.5-flash"]
+        response = None
+        last_error = None
+
+        for model_name in models_to_try:
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[image_part, text_part],
+                    config=types.GenerateContentConfig(
+                        temperature=temperature,
+                        max_output_tokens=max_tokens,
+                    ),
+                )
+                if response:
+                    logger.info(f"Successfully generated content using model: {model_name}")
+                    break
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Failed to call vision model {model_name}: {e}. Trying fallback...")
+
+        if not response:
+            if last_error:
+                raise last_error
+            raise RuntimeError("All vision models failed to respond")
 
         result = response.text.strip() if response.text else ""
         if screen_hash:

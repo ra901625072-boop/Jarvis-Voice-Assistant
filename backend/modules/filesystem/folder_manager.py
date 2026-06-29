@@ -15,6 +15,24 @@ from modules.filesystem.fs_utils import get_drives, is_safe_path, close_explorer
 logger = logging.getLogger("JARVIS.FolderManager")
 
 class FolderManager:
+    """
+    FolderManager coordinates directory actions including creation, deletion, moving, listing, and copying directories.
+
+    SYSTEM PROMPT:
+    Use FolderManager to structure directories, inspect contents, or clone folders. Always check for security paths and confirm destructive deletes.
+
+    SHORT DESCRIPTION:
+    Handles creation, list directories, moves, copy, renames, and deletion of folders on local disks with access logs.
+
+    PROCESS:
+    1. Checks folder paths against security guidelines using is_safe_path.
+    2. Logs accesses in shared SQLite histories for search boosts.
+    3. Exposes file directory actions (create, list, delete, move, copy, rename) using python standard libraries (os, shutil).
+    4. Automatically launches cross-drive transfers in background threads.
+
+    FLOW:
+    Caller -> list_directory() / create_folder() -> is_safe_path() -> SQLite updates / os filesystem -> Caller
+    """
     def __init__(self, db_path: str = None, file_mgr = None):
         self.file_mgr = file_mgr
         if db_path is None:

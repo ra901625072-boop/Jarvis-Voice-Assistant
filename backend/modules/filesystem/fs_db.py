@@ -6,6 +6,23 @@ import threading
 logger = logging.getLogger("JARVIS.FSDatabase")
 
 class FSDatabase:
+    """
+    FSDatabase provides persistent SQLite database storage for file indexing and usage histories.
+
+    SYSTEM PROMPT:
+    Query FSDatabase to fetch or update historical file accesses, searches, and directories caches.
+
+    SHORT DESCRIPTION:
+    Manages SQLite database storage operations for filesystem indexing caches and usage logs.
+
+    PROCESS:
+    1. Opens SQLite connection with Write-Ahead Logging (WAL) and synchronous normal options.
+    2. Constructs file_history and file_cache tables.
+    3. Handles logs logging, cached inserts in batch chunks, deletions, and lookup queries.
+
+    FLOW:
+    Caller -> log_access() / save_cache_batch() / search_cache() -> sqlite3 library -> SQLite file_manager.db -> Caller
+    """
     def __init__(self, db_path: str = None):
         if db_path is None:
             # Resolve db in backend/database folder

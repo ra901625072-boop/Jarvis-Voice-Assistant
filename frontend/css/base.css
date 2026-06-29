@@ -152,6 +152,21 @@ transition: all 0.3s ease;
     box-shadow: 0 0 15px var(--secondary);
 }
 
+.connection.standby {
+    border-color: rgba(0, 212, 255, 0.2);
+    background: rgba(0, 212, 255, 0.04);
+}
+.connection.standby .dot {
+    background: var(--primary);
+    box-shadow: 0 0 10px var(--primary);
+    animation: standbyPulse 3s infinite ease-in-out;
+}
+
+@keyframes standbyPulse {
+    0%, 100% { opacity: 0.3; box-shadow: 0 0 6px var(--primary); }
+    50% { opacity: 0.8; box-shadow: 0 0 14px var(--primary); }
+}
+
 @keyframes connectionPulse {
     0%, 100% { opacity: 0.4; }
     50% { opacity: 1; }
@@ -278,4 +293,98 @@ border:
 }
 .log-time.sys { color: var(--primary); }
 .log-time.jarvis { color: var(--secondary); }
+
+/* --- Security Key Modal Styles --- */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(12px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+.modal-overlay:not(.hidden) {
+    opacity: 1;
+    pointer-events: all;
+}
+.modal-content {
+    background: var(--glass);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    border-radius: 20px;
+    padding: 35px 30px;
+    width: 90%;
+    max-width: 440px;
+    text-align: center;
+    backdrop-filter: blur(25px);
+    transform: scale(0.92);
+    transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+.modal-overlay:not(.hidden) .modal-content {
+    transform: scale(1);
+}
+.modal-content h3 {
+    font-family: 'Rajdhani', 'Orbitron', sans-serif;
+    font-size: 1.8rem;
+    color: var(--secondary);
+    margin-bottom: 15px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    filter: drop-shadow(0 0 4px rgba(255, 157, 0, 0.4));
+}
+.modal-content p {
+    font-size: 0.95rem;
+    opacity: 0.85;
+    margin-bottom: 25px;
+    line-height: 1.5;
+}
+.modal-content input {
+    width: 100%;
+    padding: 12px 20px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border);
+    border-radius: 30px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 1rem;
+    text-align: center;
+    outline: none;
+    transition: all 0.3s ease;
+    margin-bottom: 20px;
+}
+.modal-content input:focus {
+    border-color: var(--secondary);
+    box-shadow: var(--shadow-gold);
+    background: rgba(255, 255, 255, 0.08);
+}
+.modal-content button {
+    padding: 12px 36px;
+    background: linear-gradient(135deg, #ffca28 0%, #f57c00 100%);
+    border: none;
+    border-radius: 30px;
+    color: #000;
+    font-family: 'Rajdhani', sans-serif;
+    font-weight: 700;
+    font-size: 1.05rem;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    cursor: pointer;
+    box-shadow: 0 0 10px rgba(245, 124, 0, 0.3);
+    transition: all 0.3s ease;
+}
+.modal-content button:hover {
+    box-shadow: var(--shadow-gold);
+    transform: translateY(-2px);
+}
+.error-text {
+    color: #ef4444;
+    font-size: 0.9rem;
+    margin-top: 15px;
+    font-weight: 500;
+}
 

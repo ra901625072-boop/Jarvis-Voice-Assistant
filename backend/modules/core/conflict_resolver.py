@@ -58,8 +58,22 @@ _PREFERENCE_ANCHORS = [
 
 class ConflictResolver:
     """
-    Checks new semantic memories against existing ones for contradictions.
-    Shared the DB connection and lock from MemoryManager.
+    ConflictResolver detects and resolves contradictory facts in semantic memory database entries.
+
+    SYSTEM PROMPT:
+    Initialize and use ConflictResolver when storing new facts or user preferences. This marks obsolete contradicting records as superseded.
+
+    SHORT DESCRIPTION:
+    Resolves contradictions and merges duplicates in the long-term semantic memory storage database.
+
+    PROCESS:
+    1. Evaluates if new content forms a factual/preference statement.
+    2. Extracts subject nouns phrases from text queries.
+    3. Finds competing database entries, evaluating predicate values against contradiction pairs (e.g. VS Code vs Vim, Python vs Go).
+    4. Updates database, marking old conflict items as superseded and boosting new records with a recency priority bonus.
+
+    FLOW:
+    Caller -> check_and_resolve() -> _find_conflicts() -> SQLite UPDATE (superseded=1) -> adjusted importance score -> Caller
     """
 
     def __init__(self, memory_manager):
@@ -170,13 +184,21 @@ class ConflictResolver:
         return False
 
     def _extract_subject(self, content: str) -> str:
-        """Extract a 2-4 word subject phrase from content."""
-        # Remove leading "my", "i", "user's" etc.
-        text = re.sub(r"^(?:my|i|user(?:'s)?|the)\s+", "", content.lower().strip())
-        # Take first 4 meaningful words
+        """Extract subject phrase by splitting before preference or verb anchors."""
+        text = content.lower().strip()
+        # Split at standard verbs/anchors
+        for verb in [r"\bis\b", r"\bare\b", r"\bwas\b", r"\bwere\b", "=", r"\blike\b", r"\blove\b", r"\buse\b"]:
+            parts = re.split(verb, text, maxsplit=1)
+            if len(parts) > 1 and len(parts[0].strip()) > 2:
+                text = parts[0].strip()
+                break
+        
+        # Clean leading words
+        text = re.sub(r"^(?:my|i|user(?:'s)?|the|favorite|preferred?)\s+", "", text)
         stop = {"a", "an", "the", "is", "are", "was", "were", "be", "been"}
-        words = [w for w in text.split()[:6] if w not in stop]
-        return " ".join(words[:3])
+        words = [w for w in text.split() if w not in stop]
+        return " ".join(words[:2])  # 1-2 words is enough for key mapping
+
 
     def _find_conflicts(
         self,
@@ -186,30 +208,46 @@ class ConflictResolver:
     ) -> List[int]:
         """
         Search existing semantic_memories for entries that:
-        1. Have a similar subject (FTS or LIKE match)
+        1. Have a similar subject (using fast FTS5 index match on semantic_memories_fts)
         2. Contain a contradicting predicate value
         """
         new_lower = new_content.lower()
 
         try:
-            # Build subject search terms (first 2 words)
-            search_words = subject.split()[:2]
-            like_clauses = " AND ".join(f"content LIKE ?" for _ in search_words)
-            params = [f"%{w}%" for w in search_words]
-            params.append(project)
+            # Prepare search words and construct clean FTS query
+            search_words = [w.replace('"', "").replace("'", "") for w in subject.split()[:2] if len(w) > 2]
+            if not search_words:
+                return []
+            fts_query = " AND ".join(f'"{w}*"' for w in search_words)
 
             with self._lock:
                 rows = self._dbs["conversations"].execute(
-                    f"""SELECT id, content FROM semantic_memories
-                        WHERE ({like_clauses})
-                          AND project = ?
-                          AND superseded = 0
-                        LIMIT 20""",
-                    params,
+                    """SELECT m.id, m.content FROM semantic_memories m
+                       JOIN semantic_memories_fts fts ON m.id = fts.rowid
+                       WHERE fts.content MATCH ?
+                         AND m.project = ?
+                         AND m.superseded = 0
+                       LIMIT 20""",
+                    (fts_query, project),
                 ).fetchall()
         except Exception as e:
-            logger.debug(f"Conflict search failed: {e}")
-            return []
+            logger.debug(f"FTS conflict search failed, falling back to LIKE: {e}")
+            # Fallback to LIKE if FTS fails
+            try:
+                search_words = subject.split()[:2]
+                like_clauses = " AND ".join("content LIKE ?" for _ in search_words)
+                params = [f"%{w}%" for w in search_words] + [project]
+                with self._lock:
+                    rows = self._dbs["conversations"].execute(
+                        f"""SELECT id, content FROM semantic_memories
+                            WHERE ({like_clauses})
+                              AND project = ?
+                              AND superseded = 0
+                            LIMIT 20""",
+                        params,
+                    ).fetchall()
+            except Exception:
+                return []
 
         conflicts = []
         for row_id, old_content in rows:

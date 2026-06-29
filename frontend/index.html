@@ -29,7 +29,11 @@
             J.A.R.V.I.S
         </div>
 
-
+        <div class="nav-tabs">
+            <button class="nav-tab active" id="tab-hud">HUD</button>
+            <button class="nav-tab" id="tab-workflows">Workflows</button>
+            <button class="nav-tab" id="tab-metrics">Metrics</button>
+        </div>
 
         <div class="connection idle" id="status-indicator">
             <span class="dot"></span>
@@ -39,7 +43,7 @@
     </header>
 
     <!-- Desktop Layout -->
-    <main class="dashboard">
+    <main class="dashboard" id="hud-view">
 
         <!-- Left -->
         <section class="left-panel">
@@ -61,12 +65,26 @@
                 <div class="progress-bar"><div class="progress-fill" id="temp-progress"></div></div>
             </div>
 
+            <!-- Agent status grid -->
+            <div class="system-card agent-grid-card">
+                <h4>Active Agents</h4>
+                <div class="agent-grid" id="agent-grid-container">
+                    <!-- Loaded dynamically -->
+                </div>
+            </div>
+
         </section>
 
         <!-- Center -->
         <section class="center-panel">
             <div class="wave-container" id="golden-wave">
                 <img src="img/wave.gif" class="wave-gif" alt="Jarvis Neural Wave">
+            </div>
+            
+            <!-- Command bar -->
+            <div class="command-container">
+                <input type="text" id="text-command-input" placeholder="Initiate system directive..." autocomplete="off">
+                <button id="send-command-btn">Execute</button>
             </div>
         </section>
 
@@ -76,15 +94,89 @@
             <div class="message-box" id="conversation-preview">
             </div>
 
+            <!-- Task execution feed -->
+            <div class="task-feed-card system-card">
+                <h4>Task Execution Feed</h4>
+                <div class="task-feed-list" id="task-feed-container">
+                    <p class="empty-feed-text">No active directives</p>
+                </div>
+            </div>
+
         </section>
 
     </main>
 
+    <!-- Workflows View -->
+    <main class="dashboard hidden" id="workflows-view">
+        <section class="full-panel">
+            <div class="system-card workflow-card">
+                <h3>Workflow Builder</h3>
+                <p>Construct multi-agent sequential pipeline executions.</p>
+                
+                <div class="workflow-split-layout">
+                    <div class="workflow-tools">
+                        <h4>Available Steps</h4>
+                        <div class="draggable-steps">
+                            <div class="drag-step" draggable="true" data-action="coding:run_tests">Run Tests</div>
+                            <div class="drag-step" draggable="true" data-action="browser_automation:search">Search Web</div>
+                            <div class="drag-step" draggable="true" data-action="file_management:copy">Copy File</div>
+                            <div class="drag-step" draggable="true" data-action="integration:fetch_emails">Fetch Emails</div>
+                        </div>
+                        <button id="save-workflow-btn" class="action-btn">Save Pipeline</button>
+                    </div>
+                    
+                    <div class="workflow-canvas">
+                        <h4>Pipeline Execution Path</h4>
+                        <div class="canvas-steps" id="workflow-canvas-steps">
+                            <div class="canvas-empty">Drag steps here to build pipeline</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Metrics View -->
+    <main class="dashboard hidden" id="metrics-view">
+        <section class="full-panel">
+            <div class="system-card metrics-card">
+                <h3>Analytics Dashboard</h3>
+                <div class="charts-grid">
+                    <div class="chart-box">
+                        <canvas id="tasks-chart"></canvas>
+                    </div>
+                    <div class="chart-box">
+                        <canvas id="performance-chart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
 </div>
 
-<!-- Script is handled by app.js -->
+<!-- API Key Modal -->
+<div id="api-key-modal" class="modal-overlay hidden">
+    <div class="modal-content">
+        <h3>JARVIS Authorization</h3>
+        <p>Please enter your JARVIS API Key to establish secure uplink.</p>
+        <div class="input-group">
+            <input type="password" id="api-key-input" placeholder="Enter API Key" autocomplete="off" />
+        </div>
+        <div class="modal-buttons">
+            <button id="save-api-key-btn">Establish Link</button>
+        </div>
+        <p id="auth-error-msg" class="error-text hidden">Unauthorized. Please check your key.</p>
+    </div>
+</div>
 
+<link rel="stylesheet" href="css/dashboard.css">
 <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="js/task_manager.js"></script>
+<script src="js/agent_status.js"></script>
+<script src="js/workflow_builder.js"></script>
+<script src="js/charts.js"></script>
 <script src="app.js"></script>
 
 </body>

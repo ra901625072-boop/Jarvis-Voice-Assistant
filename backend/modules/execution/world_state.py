@@ -1,6 +1,8 @@
 import logging
 import psutil
 import pyperclip
+import threading
+import time
 from typing import Dict, List, Any
 try:
     import pygetwindow as gw
@@ -11,10 +13,37 @@ logger = logging.getLogger("JARVIS.WorldState")
 
 class WorldStateManager:
     """
-    Maintains a deterministic snapshot of the OS environment.
+    WorldStateManager captures system indicators including running processes, open windows, and clipboard contents.
+    Converts to a thread-safe singleton managing shared state updates and short-lived snapshot cache.
     """
+    _instance = None
+    _lock = threading.Lock()
+
+    def __new__(cls, *args, **kwargs):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super(WorldStateManager, cls).__new__(cls)
+                cls._instance._initialized = False
+            return cls._instance
+
     def __init__(self):
+        if getattr(self, "_initialized", False):
+            return
         self._last_snapshot = {}
+        self._last_snapshot_time = 0.0
+        self._state_lock = threading.Lock()  # Instance lock (separate from class-level singleton _lock)
+        self._shared_state = {}
+        self._initialized = True
+        logger.info("WorldStateManager singleton initialized.")
+
+    def update_shared_state(self, key: str, value: Any):
+        with self._state_lock:
+            self._shared_state[key.lower()] = value
+            logger.info(f"WorldState shared_state updated: {key} -> {value}")
+
+    def get_shared_state(self, key: str, default: Any = None) -> Any:
+        with self._state_lock:
+            return self._shared_state.get(key.lower(), default)
 
     def get_running_processes(self) -> List[str]:
         """Returns a list of key running process names (deduplicated)."""
@@ -52,14 +81,32 @@ class WorldStateManager:
             logger.debug(f"Failed to read clipboard: {e}")
             return ""
 
-    def get_state_snapshot(self) -> Dict[str, Any]:
-        """Captures and returns the current world state."""
-        self._last_snapshot = {
-            "windows": self.get_open_windows(),
-            "processes": self.get_running_processes(),
-            "clipboard": self.get_clipboard_content()
-        }
-        return self._last_snapshot
+    def get_state_snapshot(self, max_age: float = 0.5) -> Dict[str, Any]:
+        """Captures and returns the current world state, using a short-lived cache."""
+        # Fast path: return cached snapshot if still fresh
+        with self._state_lock:
+            now = time.time()
+            if self._last_snapshot and (now - self._last_snapshot_time < max_age):
+                return self._last_snapshot
+
+        # Collect expensive I/O OUTSIDE the lock to avoid blocking other threads
+        windows = self.get_open_windows()
+        processes = self.get_running_processes()
+        clipboard = self.get_clipboard_content()
+
+        # Atomically update the cache
+        with self._state_lock:
+            now = time.time()
+            # Double-check: another thread may have refreshed while we collected
+            if self._last_snapshot and (now - self._last_snapshot_time < max_age):
+                return self._last_snapshot
+            self._last_snapshot = {
+                "windows": windows,
+                "processes": processes,
+                "clipboard": clipboard
+            }
+            self._last_snapshot_time = now
+            return self._last_snapshot
 
     def format_state_for_planner(self) -> str:
         """Formats the state snapshot into a concise string for LLM injection."""

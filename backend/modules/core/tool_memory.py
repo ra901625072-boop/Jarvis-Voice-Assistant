@@ -42,8 +42,22 @@ _MIN_CALLS_TO_FLAG  = 3      # don't flag until we have this many calls
 
 class ToolMemory:
     """
-    Records and retrieves per-tool performance metrics.
-    Shared DB connection + lock from MemoryManager.
+    ToolMemory records and retrieves per-tool performance metrics.
+
+    SYSTEM PROMPT:
+    Initialize or query ToolMemory to record success/failure outcomes, fetch reliability scores, or check for tool failure warnings.
+
+    SHORT DESCRIPTION:
+    Performance analytics tracker that logs execution status, elapsed times, and errors to calculate rolling reliability metrics.
+
+    PROCESS:
+    1. Logs tool execution outcome parameters (tool_name, success, execution time, error info).
+    2. Calculates a rolling Exponential Moving Average (EMA) reliability score.
+    3. Exposes queries to list unreliable tools (scoring below threshold metrics after minimal execution calls).
+    4. Formulates diagnostic and cautionary warning prompts for the agent.
+
+    FLOW:
+    Caller/SafeExecute -> record() -> rolling EMA calculations -> SQLite UPDATE/INSERT -> Caller
     """
 
     def __init__(self, memory_manager):

@@ -109,6 +109,24 @@ class LegacyLockWrapper:
             ctx.__exit__(exc_type, exc_val, exc_tb)
 
 class FileManager:
+    """
+    FileManager coordinates local disk operations, file matching, and search history logs.
+
+    SYSTEM PROMPT:
+    Use FileManager to handle single file management, reads, writes, searches, and path resolutions. Always resolve query names fuzzy-matched aliases.
+
+    SHORT DESCRIPTION:
+    Handles creation, deletion, moving, indexing, and fuzzy searching of system files with SQLite logs tracking.
+
+    PROCESS:
+    1. Indexes folders in background using SQLite database storage.
+    2. Parses natural language queries into target directories, dates, extensions, and sorted filters.
+    3. Resolves files by query keyword, querying Windows Search, Everything DLL, SQLite caches, or parallel disk walks.
+    4. Handles CRUD options on target paths using custom thread locks.
+
+    FLOW:
+    Caller -> search_file() / create_file() -> resolve_path() -> SQLite caches / thread locks / OS filesystem API -> Caller
+    """
     def __init__(self, db_path: str = None):
         if db_path is None:
             # Resolve db in backend/database folder
@@ -119,7 +137,10 @@ class FileManager:
         self.lock_manager = ResourceLockManager()
         self._db_lock = LegacyLockWrapper(self.lock_manager, 'db', self.db_path)
         self._local = threading.local()
+        self._path_cache = {}
+        self._indexer_started = False
         self._init_db()
+        logger.info(f"FileManager initialized with DB: {db_path}")
 
     @property
     def _shared_conn(self):
@@ -128,10 +149,6 @@ class FileManager:
             self._local.conn.execute("PRAGMA journal_mode=WAL")
             self._local.conn.execute("PRAGMA synchronous=NORMAL")
         return self._local.conn
-        self._path_cache = {}
-        self._indexer_started = False
-        
-        logger.info(f"FileManager initialized with DB: {db_path}")
 
     def _init_db(self):
         """Initializes the SQLite database tables."""
@@ -811,10 +828,7 @@ class FileManager:
                 try:
                     with self.lock_manager.lock_resources([('file', src), ('file', dest)]):
                         if os.path.exists(dest):
-                            if os.path.isdir(dest):
-                                shutil.rmtree(dest)
-                            else:
-                                os.remove(dest)
+                            send2trash(dest)
                         shutil.move(src, dest)
                         logger.info(f"Background move complete: {src} to {dest}")
                         self.log_file_access(dest)
@@ -839,6 +853,8 @@ class FileManager:
             else:
                 with self.lock_manager.lock_resources([('file', src), ('file', dest)]):
                     os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    if os.path.exists(dest):
+                        send2trash(dest)
                     shutil.move(src, dest)
                     logger.info(f"Moved file {src} to {dest}")
                     self.log_file_access(dest)

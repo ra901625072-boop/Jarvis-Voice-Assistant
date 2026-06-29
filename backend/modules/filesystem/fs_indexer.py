@@ -69,6 +69,23 @@ class FSIndexEventHandler(FileSystemEventHandler):
 
 
 class FSIndexer:
+    """
+    FSIndexer manages filesystem indexing scans and schedules real-time filesystem watchdog observers.
+
+    SYSTEM PROMPT:
+    Use FSIndexer to index default directory paths and schedule real-time watchdog filesystem event notifications.
+
+    SHORT DESCRIPTION:
+    Orchestrates initial filesystem crawls and schedules watchdog monitoring to update SQLite database caches.
+
+    PROCESS:
+    1. Determines default system paths (workspace roots, Documents, Desktop, Downloads).
+    2. Runs deep os.walk scans asynchronously, sending batch chunks to FSDatabase.
+    3. Runs watchdog.observers.Observer threads to listen to realtime filesystem events (create, delete, move, modify).
+
+    FLOW:
+    Caller -> start_background_indexer() -> _initial_deep_scan() & start_realtime_observer() -> FSDatabase caching -> Caller
+    """
     def __init__(self, db: FSDatabase):
         self.db = db
         self.observer = None

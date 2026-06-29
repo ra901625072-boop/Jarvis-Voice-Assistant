@@ -1,8 +1,8 @@
 import logging
 import time
 from typing import Optional
-from modules.perception.screen_observer import ScreenObserver
-from modules.perception import vision
+from modules.vision.screen_observer import ScreenObserver
+from modules.vision import vision
 
 try:
     import pygetwindow as gw
@@ -12,6 +12,24 @@ except ImportError:
 logger = logging.getLogger("JARVIS.ActionVerifier")
 
 class ActionVerifier:
+    """
+    ActionVerifier checks if the state of the OS UI matches expectations using visual verification.
+
+    SYSTEM PROMPT:
+    Use ActionVerifier to dynamically verify UI states, loaded web pages, or application elements. Always specify a descriptive target state.
+
+    SHORT DESCRIPTION:
+    Verifies that system or UI states match expectations by capturing screenshots and running vision-based model checks.
+
+    PROCESS:
+    1. Obtains window region bounding box coordinates if window title matches.
+    2. Takes a forced screenshot of the specified screen region.
+    3. Triggers vision model logic via verify_condition to check if the image displays the expected state.
+    4. Supports polling loops with configurable timeout values.
+
+    FLOW:
+    Caller -> verify_state()/wait_for_state() -> ScreenObserver.get_screenshot() -> vision.verify_condition() -> boolean outcome -> Caller
+    """
     def __init__(self, observer: Optional[ScreenObserver] = None):
         self.observer = observer or ScreenObserver()
         logger.info("ActionVerifier initialized.")

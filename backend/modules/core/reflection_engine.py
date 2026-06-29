@@ -27,8 +27,22 @@ logger = logging.getLogger("JARVIS.ReflectionEngine")
 
 class ReflectionEngine:
     """
-    Generates structured daily reflections by analyzing recent memory activity.
-    Receives a reference to the live MemoryManager.
+    ReflectionEngine generates structured periodic reflections by analyzing recent memory activity.
+
+    SYSTEM PROMPT:
+    Trigger ReflectionEngine to compile daily, weekly, or monthly reports on topics, workflows, and user preference signals.
+
+    SHORT DESCRIPTION:
+    Consolidates daily log patterns and workflow successes/failures to output agent reflections and promote insights to semantic memory.
+
+    PROCESS:
+    1. Runs topic frequency counts on recent conversations using domain keyword mappings.
+    2. Measures workflow success and failure rates to discover unreliable tasks.
+    3. Traces habitual user commands to infer preferences.
+    4. Formulates a text summary report, saves it to the agent_reflections SQLite table, and writes high-priority insights back to long-term semantic storage.
+
+    FLOW:
+    Scheduler/Caller -> run_daily() / run_weekly() / run_monthly() -> analyzes databases -> writes agent_reflections / semantic_memories -> Caller
     """
 
     def __init__(self, memory_manager):

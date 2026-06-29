@@ -35,8 +35,22 @@ logger = logging.getLogger("JARVIS.GoalMemory")
 
 class GoalMemory:
     """
-    Manages active goals and provides goal-relevance scoring
-    for the hybrid retrieval pipeline.
+    GoalMemory manages the active goal hierarchy and scores retrieval relevance based on current objectives.
+
+    SYSTEM PROMPT:
+    Initialize and use GoalMemory to register active objectives, check task hierarchies, or calculate context relevance indicators.
+
+    SHORT DESCRIPTION:
+    Manages active user goals, child actions milestones, scoring relevances, and implicit goal autodetection.
+
+    PROCESS:
+    1. Writes goals (Strategic, Project, Task, Action) to SQLite storage.
+    2. Archives completed goals to episodic memories.
+    3. Auto-detects goals from high-importance semantic patterns using regex rules.
+    4. Computes Jaccard/keyword relevance multipliers to weight memory recall toward current goals.
+
+    FLOW:
+    Caller -> set_goal()/complete_goal()/goal_relevance_score() -> SQLite active_goals table -> Caller
     """
 
     def __init__(self, memory_manager):
@@ -186,6 +200,7 @@ class GoalMemory:
         """
         Compute a goal-relevance score (0.0–1.0) for a memory content string.
         Higher = more relevant to current active goals.
+        Optimized to capture developer tokens (length >= 3) like git, npm, api, db.
         """
         goals = self.get_active_goals()
         if not goals:
@@ -193,14 +208,15 @@ class GoalMemory:
 
         content_lower = content.lower()
         max_score     = 0.0
+        stop_words = {"the", "and", "for", "with", "this", "that", "from", "your", "have", "will", "what"}
 
         for goal in goals:
             goal_text = goal["goal"].lower()
             priority  = goal["priority"] / 10.0  # normalize 0–1
 
-            # Keyword overlap
-            goal_words = set(re.findall(r"\b\w{4,}\b", goal_text))
-            content_words = set(re.findall(r"\b\w{4,}\b", content_lower))
+            # Keyword overlap (length >= 3, excluding stopwords)
+            goal_words = set(w for w in re.findall(r"\b\w{3,}\b", goal_text) if w not in stop_words)
+            content_words = set(w for w in re.findall(r"\b\w{3,}\b", content_lower) if w not in stop_words)
             if not goal_words:
                 continue
 
@@ -212,6 +228,7 @@ class GoalMemory:
                 max_score = score
 
         return min(max_score, 1.0)
+
 
     def goal_context_string(self) -> str:
         """Return a formatted string of active goals for LLM context injection."""

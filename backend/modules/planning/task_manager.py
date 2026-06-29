@@ -66,6 +66,24 @@ class BackgroundTask:
         }
 
 class BackgroundTaskManager:
+    """
+    BackgroundTaskManager queues, runs, monitors, and retries background tasks.
+
+    SYSTEM PROMPT:
+    Initialize and query BackgroundTaskManager to schedule long-running operations. Always check statuses using task IDs returned when queuing tasks.
+
+    SHORT DESCRIPTION:
+    Manages long-running system tasks asynchronously in a worker pool with persistent SQLite logging.
+
+    PROCESS:
+    1. Creates/verifies a local SQLite repository for task tracking.
+    2. Registers handlers for task execution types.
+    3. Queues task IDs, restores pending tasks upon restart, and feeds threads in worker pools.
+    4. Handles timeouts, progress updates, state changes, cancellations, and automatic retry behaviors.
+
+    FLOW:
+    Caller -> add_task() -> task queue -> Worker Thread -> task handler -> updates SQLite status -> Caller
+    """
     def __init__(self, db_path: str = None, num_workers: int = 2):
         self.tasks = {}
         self.queue = queue.Queue()
@@ -307,7 +325,36 @@ class BackgroundTaskManager:
             context = TaskContext(self, task_id)
             
             try:
-                result = task.func(context, *task.args, **task.kwargs)
+                celery_enabled = os.environ.get("JARVIS_CELERY_ENABLED", "false").lower() == "true"
+                if celery_enabled and task.task_type in ("skill_task", "tool_task", "nl_command"):
+                    logger.info(f"Dispatching task {task_id} of type '{task.task_type}' to Celery workers.")
+                    from tasks.task_registry import CeleryTaskRegistry
+                    
+                    tool_name = task.kwargs.get("tool_name", "nl_command_executor")
+                    action_name = task.kwargs.get("action_name", "process")
+                    tool_args = task.kwargs.get("args", task.kwargs)
+                    
+                    celery_task = CeleryTaskRegistry.dispatch_to_celery(tool_name, action_name, tool_args)
+                    
+                    # Wait for Celery task result and update progress
+                    # In a production setup, we check state in a loop
+                    import time
+                    while not celery_task.ready():
+                        if task.status == TaskStatus.CANCELLED:
+                            celery_task.revoke(terminate=True)
+                            break
+                        # Update task progress periodically if celery offers state metadata
+                        # Mock progress update
+                        if task.progress < 90:
+                            context.update_progress(task.progress + 10)
+                        time.sleep(0.5)
+                        
+                    if celery_task.successful():
+                        result = celery_task.get()
+                    else:
+                        raise celery_task.result if celery_task.result else RuntimeError("Celery task execution failed.")
+                else:
+                    result = task.func(context, *task.args, **task.kwargs)
                 
                 with self.lock:
                     if task.status == TaskStatus.CANCELLED:

@@ -1,4 +1,5 @@
 import os
+import subprocess
 import pyperclip
 import pyautogui
 import logging
@@ -8,6 +9,24 @@ import tempfile
 logger = logging.getLogger("JARVIS.System")
 
 class SystemController:
+    """
+    SystemController handles system shutdown, reboot, sleep, clipboard access, screenshots, and opening settings.
+
+    SYSTEM PROMPT:
+    Use SystemController to perform system operations (power state transitions, clipboard queries/edits, screenshots, settings apps). Always ask the user for confirmation prior to power operations (shutdown, restart, logout).
+
+    SHORT DESCRIPTION:
+    Manages host OS power functions, clipboard data, screen capture, and system configuration launchers.
+
+    PROCESS:
+    1. Executes shell commands or specialized DLL calls (e.g. rundll32.exe) to change power states (shutdown, restart, sleep, lock, logout).
+    2. Interacts with the local keyboard/clipboard buffer via pyperclip.
+    3. Triggers fullscreen capture via pyautogui and processes/saves as optimized JPEG files.
+    4. Starts specific URI protocols (e.g., ms-settings:) to open Windows Settings pages.
+
+    FLOW:
+    Caller -> shutdown()/copy_text()/take_screenshot() -> subprocess / pyperclip / pyautogui / os.system() -> OS Kernel / GUI Subsystem -> Caller
+    """
     def __init__(self):
         logger.info("SystemController initialized.")
 
@@ -16,9 +35,9 @@ class SystemController:
         try:
             logger.info("Initiating system shutdown.")
             if platform.system() == "Windows":
-                os.system("shutdown /s /t 1")
+                subprocess.run(["shutdown", "/s", "/t", "1"], check=True)
             else:
-                os.system("shutdown -h now")
+                subprocess.run(["shutdown", "-h", "now"], check=True)
             return True
         except Exception as e:
             logger.error(f"Failed to shutdown: {e}")
@@ -28,9 +47,9 @@ class SystemController:
         try:
             logger.info("Initiating system restart.")
             if platform.system() == "Windows":
-                os.system("shutdown /r /t 1")
+                subprocess.run(["shutdown", "/r", "/t", "1"], check=True)
             else:
-                os.system("shutdown -r now")
+                subprocess.run(["shutdown", "-r", "now"], check=True)
             return True
         except Exception as e:
             logger.error(f"Failed to restart: {e}")
@@ -40,9 +59,9 @@ class SystemController:
         try:
             logger.info("Initiating system sleep.")
             if platform.system() == "Windows":
-                os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
+                subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"], check=True)
             else:
-                os.system("systemctl suspend")
+                subprocess.run(["systemctl", "suspend"], check=True)
             return True
         except Exception as e:
             logger.error(f"Failed to sleep: {e}")
@@ -52,8 +71,10 @@ class SystemController:
         try:
             logger.info("Locking PC.")
             if platform.system() == "Windows":
-                os.system("rundll32.exe user32.dll,LockWorkStation")
-            return True
+                subprocess.run(["rundll32.exe", "user32.dll,LockWorkStation"], check=True)
+                return True
+            logger.warning("lock_pc is only supported on Windows.")
+            return False
         except Exception as e:
             logger.error(f"Failed to lock PC: {e}")
             return False
@@ -62,8 +83,10 @@ class SystemController:
         try:
             logger.info("Logging out.")
             if platform.system() == "Windows":
-                os.system("shutdown /l")
-            return True
+                subprocess.run(["shutdown", "/l"], check=True)
+                return True
+            logger.warning("logout is only supported on Windows.")
+            return False
         except Exception as e:
             logger.error(f"Failed to logout: {e}")
             return False
@@ -94,69 +117,46 @@ class SystemController:
             logger.error(f"Failed to clear clipboard: {e}")
             return False
 
-    # Screenshots
-    def take_screenshot(self, save_path="screenshot.jpg"):
-        try:
-            image = pyautogui.screenshot()
-            image = image.convert("RGB")
-            image.thumbnail((1600, 900))
-            image.save(save_path, "JPEG", quality=75, optimize=True)
-            logger.info(f"Screenshot saved to {save_path}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to take screenshot: {e}")
-            return False
-
     # Settings Pages (Windows specific)
-    def open_settings(self):
+    def _open_settings_page(self, uri: str, label: str = "settings") -> bool:
+        """Internal helper to open a Windows Settings URI."""
         try:
             if platform.system() == "Windows":
-                os.system("start ms-settings:")
+                subprocess.run(["start", uri], shell=True, check=True)
             return True
         except Exception as e:
-            logger.error("Failed to open settings.")
+            logger.error(f"Failed to open {label}: {e}")
             return False
+
+    def open_settings(self):
+        return self._open_settings_page("ms-settings:", "settings")
 
     def open_wifi_settings(self):
-        try:
-            if platform.system() == "Windows":
-                os.system("start ms-settings:network-wifi")
-            return True
-        except Exception as e:
-            logger.error("Failed to open wifi settings.")
-            return False
+        return self._open_settings_page("ms-settings:network-wifi", "wifi settings")
 
     def open_bluetooth_settings(self):
-        try:
-            if platform.system() == "Windows":
-                os.system("start ms-settings:bluetooth")
-            return True
-        except Exception as e:
-            logger.error("Failed to open bluetooth settings.")
-            return False
+        return self._open_settings_page("ms-settings:bluetooth", "bluetooth settings")
 
     def open_display_settings(self):
-        try:
-            if platform.system() == "Windows":
-                os.system("start ms-settings:display")
-            return True
-        except Exception as e:
-            return False
+        return self._open_settings_page("ms-settings:display", "display settings")
 
-def capture_screen():
-    temp_file = tempfile.NamedTemporaryFile(
-        suffix=".jpg",
-        delete=False
-    )
-    screenshot = pyautogui.screenshot()
-    screenshot = screenshot.convert("RGB")
-    screenshot.thumbnail((1600, 900))
-    screenshot.save(temp_file.name, "JPEG", quality=75, optimize=True)
-    return temp_file.name
+    # Screenshots
+    def take_screenshot(self, save_path: str = None) -> bool:
+        """Take a screenshot and save to the specified path (or a temp file)."""
+        if save_path is None:
+            save_path = os.path.join(tempfile.gettempdir(), "jarvis_screenshot.jpg")
+        return _capture_screenshot(save_path)
 
-def capture_screen_to_path(target_path):
-    screenshot = pyautogui.screenshot()
-    screenshot = screenshot.convert("RGB")
-    screenshot.thumbnail((1600, 900))
-    screenshot.save(target_path, "JPEG", quality=75, optimize=True)
-    logger.info(f"Screenshot saved to {target_path}")
+
+def _capture_screenshot(target_path: str) -> bool:
+    """Shared screenshot helper used by SystemController, capture_screen, and capture_screen_to_path."""
+    try:
+        image = pyautogui.screenshot()
+        image = image.convert("RGB")
+        image.thumbnail((1600, 900))
+        image.save(target_path, "JPEG", quality=75, optimize=True)
+        logger.info(f"Screenshot saved to {target_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to take screenshot: {e}")
+        return False

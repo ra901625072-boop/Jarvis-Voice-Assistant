@@ -7,7 +7,22 @@ logger = logging.getLogger("JARVIS.SuccessLearning")
 
 class SuccessLearner:
     """
-    Extracts successful plans and promotes them as preferred workflows.
+    SuccessLearner tracks successfully executed plans to promote high-performing workflows.
+
+    SYSTEM PROMPT:
+    Query SuccessLearner to fetch previously proven, high-scoring step sequences for similar user goals.
+
+    SHORT DESCRIPTION:
+    Analyzes and saves successful task sequences as reusable workflow pattern templates.
+
+    PROCESS:
+    1. Filter out plans with fewer than 2 subtasks to avoid registering trivial steps.
+    2. Serializes successfully executed task descriptions into JSON formatting.
+    3. Commits to the local database, incrementing usage counters and confidence scores for duplicate goals.
+    4. Searches matching templates using partial text matches and returns sorted, high-score workflows.
+
+    FLOW:
+    Caller -> learn_from_success()/get_preferred_workflow() -> MemoryManager DB connections -> success_patterns SQLite table -> Caller
     """
     def __init__(self, memory_manager):
         self.mm = memory_manager
@@ -43,7 +58,8 @@ class SuccessLearner:
                 if existing:
                     row_id, count = existing
                     self._dbs["conversations"].execute(
-                        "UPDATE success_patterns SET use_count=?, score=score+0.1 WHERE id=?",
+                        # Clamp score to max 5.0 to prevent unbounded growth
+                        "UPDATE success_patterns SET use_count=?, score=MIN(score+0.1, 5.0) WHERE id=?",
                         (count + 1, row_id)
                     )
                 else:
@@ -66,12 +82,13 @@ class SuccessLearner:
 
         try:
             with self._lock:
-                # Simple exact or LIKE match
+                # Escape LIKE wildcards to prevent unintended SQL pattern matches
+                safe_goal = goal.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
                 row = self._dbs["conversations"].execute(
                     """SELECT plan_json, score FROM success_patterns 
-                       WHERE goal LIKE ? 
+                       WHERE goal LIKE ? ESCAPE '\\'
                        ORDER BY score DESC LIMIT 1""",
-                    (f"%{goal}%",)
+                    (f"%{safe_goal}%",)
                 ).fetchone()
                 
             if row:

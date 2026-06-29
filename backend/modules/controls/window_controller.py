@@ -5,6 +5,23 @@ import logging
 logger = logging.getLogger("JARVIS.Window")
 
 class WindowController:
+    """
+    WindowController handles window actions including minimize, maximize, restore, close, and focus focus.
+
+    SYSTEM PROMPT:
+    Use WindowController to manipulate host OS graphical windows (minimize, maximize, focus, close). Verify window titles before performing operations, and ask for user confirmation before closing active windows.
+
+    SHORT DESCRIPTION:
+    Manages host OS window operations, layouts, states, and focus settings using PyGetWindow and PyAutoGUI.
+
+    PROCESS:
+    1. Finds target window matching a title keyword, defaulting to the currently active window if no keyword is provided.
+    2. Invokes pygetwindow window control methods (minimize, maximize, restore, close, activate).
+    3. Simulates system-wide hotkeys (e.g., win+d, alt+tab) using pyautogui.
+
+    FLOW:
+    Caller -> focus_window()/close_window() -> _get_window() -> pygetwindow API calls -> OS Window Manager -> Caller
+    """
     def __init__(self):
         logger.info("WindowController initialized.")
         
@@ -12,10 +29,12 @@ class WindowController:
         if not title_keyword:
             # Active window
             return gw.getActiveWindow()
-            
-        windows = gw.getWindowsWithTitle(title_keyword)
-        if windows:
-            return windows[0]
+
+        # Case-insensitive substring match across all windows
+        keyword_lower = title_keyword.lower()
+        matches = [w for w in gw.getAllWindows() if keyword_lower in w.title.lower()]
+        if matches:
+            return matches[0]
         return None
 
     def minimize_window(self, title_keyword=None):

@@ -17,20 +17,64 @@ class AgentState(Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
 
+class CancellationToken:
+    """
+    Thread-safe CancellationToken to abort running tool operations, loops, or wait states.
+    """
+    def __init__(self):
+        self._is_cancelled = False
+        self._callbacks = []
+        self._lock = threading.Lock()
+
+    def cancel(self):
+        with self._lock:
+            if self._is_cancelled:
+                return
+            self._is_cancelled = True
+        logger.info("Cancellation token triggered.")
+        for cb in self._callbacks:
+            try:
+                cb()
+            except Exception as e:
+                logger.error(f"Error in cancellation callback: {e}")
+
+    @property
+    def is_cancelled(self) -> bool:
+        with self._lock:
+            return self._is_cancelled
+
+    def register_callback(self, callback):
+        with self._lock:
+            if self._is_cancelled:
+                try:
+                    callback()
+                except Exception as e:
+                    logger.error(f"Error executing callback on cancelled token: {e}")
+            else:
+                self._callbacks.append(callback)
+
 class SubTask:
-    def __init__(self, description: str, task_id: int = None, tool_name: Optional[str] = None, dependencies: List[int] = None):
+    def __init__(self, description: str, task_id: int = None, tool_name: Optional[str] = None, dependencies: List[int] = None, args: Optional[Dict[str, Any]] = None, verify_condition_type: Optional[str] = None, verify_target: Optional[str] = None):
         self.id = task_id if task_id is not None else id(self)
         self.description = description
         self.tool_name = tool_name
         self.dependencies = dependencies or []
+        self.args = args or {}
+        self.verify_condition_type = verify_condition_type
+        self.verify_target = verify_target
         self.status = "pending"  # pending, in_progress, completed, failed
         self.result: Optional[str] = None
         self.error: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "id": self.id,
             "description": self.description,
             "tool_name": self.tool_name,
+            "dependencies": self.dependencies,
+            "args": self.args,
+            "verify_condition_type": self.verify_condition_type,
+            "verify_target": self.verify_target,
             "status": self.status,
             "result": self.result,
             "error": self.error
@@ -52,6 +96,25 @@ class Plan:
         }
 
 class AgentStateManager:
+    """
+    AgentStateManager coordinates active execution flows, subtask progress, and transient session states.
+
+    SYSTEM PROMPT:
+    Initialize or query AgentStateManager to set goals, fetch the next executable task, transition execution phases, or persist/restore checkpoints.
+
+    SHORT DESCRIPTION:
+    Central singleton managing current objectives, active multi-step plans, cascade blockers, window contexts, and execution logs.
+
+    PROCESS:
+    1. Holds and updates the global agent execution status (IDLE, PLANNING, EXECUTING, etc.).
+    2. Builds plans, tracks subtasks indices, and resolves dependency chains to return next runnable tasks.
+    3. Handles task completion statuses, cascades failure states to downstream dependencies, and updates logs.
+    4. Serializes active goals, plans, history lists, and screen maps to SQLite databases for recovery, or deserializes them.
+
+    FLOW:
+    Caller -> set_plan() -> get_next_task() -> update_task_status() -> persist_state() -> MemoryManager -> SQLite -> Caller
+    """
+
     _instance = None
     _lock = threading.Lock()
 
@@ -69,11 +132,14 @@ class AgentStateManager:
         self.current_task_idx: int = -1
         self.screen_context: Dict[str, Any] = {}
         self.execution_history: List[Dict[str, Any]] = []
+        self.cancel_token = CancellationToken()
         self._state_lock = threading.Lock()
         logger.info("AgentStateManager initialized.")
 
     def set_plan(self, goal: str, subtasks: List[SubTask]):
         with self._state_lock:
+            self.cancel_token.cancel() # Cancel any old tasks
+            self.cancel_token = CancellationToken() # Fresh token
             self.current_goal = goal
             self.active_plan = Plan(goal, subtasks)
             self.current_task_idx = 0
@@ -169,6 +235,8 @@ class AgentStateManager:
 
     def clear_state(self):
         with self._state_lock:
+            self.cancel_token.cancel()
+            self.cancel_token = CancellationToken()
             self.agent_state = AgentState.IDLE
             self.current_goal = None
             self.active_plan = None
@@ -180,6 +248,13 @@ class AgentStateManager:
         with self._state_lock:
             logger.info(f"Agent state transitioning: {self.agent_state.value} -> {new_state.value}")
             self.agent_state = new_state
+            try:
+                from container import ServiceContainer
+                observer = ServiceContainer.instance().get_or_none("screen_observer")
+                if observer:
+                    observer.set_frequency(new_state.value)
+            except Exception as e:
+                logger.debug(f"Failed to dynamically adjust ScreenObserver frequency: {e}")
 
     # ------------------------------------------------------------------ #
     # Crash-safe persistence                                               #
@@ -218,10 +293,17 @@ class AgentStateManager:
 
                 plan_data = saved.get("active_plan")
                 if plan_data and plan_data.get("goal"):
-                    subtasks = [
-                        SubTask(description=t["description"])
-                        for t in plan_data.get("subtasks", [])
-                    ]
+                    subtasks = []
+                    for t in plan_data.get("subtasks", []):
+                        subtasks.append(SubTask(
+                            description=t.get("description", ""),
+                            task_id=t.get("id"),
+                            tool_name=t.get("tool_name"),
+                            dependencies=t.get("dependencies", []),
+                            args=t.get("args", {}),
+                            verify_condition_type=t.get("verify_condition_type"),
+                            verify_target=t.get("verify_target")
+                        ))
                     for i, t in enumerate(subtasks):
                         t.status = plan_data["subtasks"][i].get("status", "pending")
                         t.result = plan_data["subtasks"][i].get("result")

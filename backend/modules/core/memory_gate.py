@@ -49,11 +49,22 @@ class GateDecision:
 
 class MemoryGate:
     """
-    Stateful memory write gate.  One instance per MemoryManager.
+    MemoryGate controls memory write decisions to filter duplicate, short, or low-importance entries from the databases.
 
-    Thread-safe via internal lock.
-    Maintains a rolling window of recent content fingerprints
-    and a frequency counter for deferred topics.
+    SYSTEM PROMPT:
+    Evaluate write queries via MemoryGate before saving to long-term database collections to prevent noise pollution.
+
+    SHORT DESCRIPTION:
+    Filters and regulates what data is committed to long-term memory using duplicates checks and frequency promotion.
+
+    PROCESS:
+    1. Rejects short text inputs (<8 chars) or assistant noise.
+    2. Runs fast SHA-256 fingerprint checks and Jaccard similarity loops.
+    3. Handles frequency bucket tallies for deferred topics, promoting them once the count threshold is met.
+    4. Issues PASS, REJECT, or DEFER verdicts.
+
+    FLOW:
+    Caller -> evaluate() -> checks length/duplicate hashes/Jaccard similarity/frequency counts -> verdict decision -> Caller
     """
 
     def __init__(self):
@@ -98,41 +109,38 @@ class MemoryGate:
         if importance <= 2:
             return GateDecision.REJECT, "importance_too_low"
 
-        # 2. Duplicate detection (fast hash first)
         content_hash = self._fingerprint(content)
+        
         with self._lock:
+            # 2. Duplicate detection (fast hash first)
             if content_hash in self._recent_hashes:
                 return GateDecision.REJECT, "exact_duplicate"
 
-        # 3. Jaccard duplicate check against provided recent memories
-        if recent_semantic_contents:
-            for recent in recent_semantic_contents[-30:]:
-                if _jaccard_sim(content, recent) > _DUP_JACCARD_THRESH:
-                    return GateDecision.REJECT, "near_duplicate"
+            # 3. Jaccard duplicate check against provided recent memories
+            if recent_semantic_contents:
+                for recent in recent_semantic_contents[-30:]:
+                    if _jaccard_sim(content, recent) > _DUP_JACCARD_THRESH:
+                        return GateDecision.REJECT, "near_duplicate"
 
-        # 4. High importance → always PASS
-        if importance >= _MIN_IMPORTANCE_PASS:
-            with self._lock:
+            # 4. High importance → always PASS
+            if importance >= _MIN_IMPORTANCE_PASS:
                 self._recent_hashes.append(content_hash)
-            return GateDecision.PASS, "high_importance"
+                return GateDecision.PASS, "high_importance"
 
-        # 5. Medium importance → DEFER (frequency promotion)
-        if importance >= _MIN_IMPORTANCE_DEFER:
-            topic_key = self._topic_key(content)
-            with self._lock:
+            # 5. Medium importance → DEFER (frequency promotion)
+            if importance >= _MIN_IMPORTANCE_DEFER:
+                topic_key = self._topic_key(content)
                 self._defer_counts[topic_key] += 1
                 count = self._defer_counts[topic_key]
                 if topic_key not in self._defer_content:
                     self._defer_content[topic_key] = content
 
                 if count >= _DEFER_PROMOTE_COUNT:
-                    # Frequency threshold reached → promote
                     self._recent_hashes.append(content_hash)
-                    # Reset so it doesn't keep re-promoting
                     self._defer_counts[topic_key] = 0
                     return GateDecision.PASS, f"frequency_promoted_{count}x"
 
-            return GateDecision.DEFER, f"deferred_{count}x"
+                return GateDecision.DEFER, f"deferred_{count}x"
 
         # 6. Default reject (importance 1–2 already caught above)
         return GateDecision.REJECT, "below_threshold"
@@ -174,13 +182,21 @@ class MemoryGate:
 # ------------------------------------------------------------------ #
 
 def _jaccard_sim(a: str, b: str, ngram: int = 3) -> float:
-    """Character n-gram Jaccard similarity."""
+    """Stopword-filtered character n-gram Jaccard similarity."""
     if not a or not b:
         return 0.0
-    a_l = a.lower()
-    b_l = b.lower()
-    set_a = {a_l[i:i+ngram] for i in range(len(a_l) - ngram + 1)}
-    set_b = {b_l[i:i+ngram] for i in range(len(b_l) - ngram + 1)}
+    stop = {"the", "a", "an", "is", "are", "was", "were", "i", "to", "of", "in", "on", "and", "or", "my", "you", "that", "this"}
+    # Remove stopwords and normalize spacing
+    a_words = [w for w in a.lower().split() if w not in stop]
+    b_words = [w for w in b.lower().split() if w not in stop]
+    a_clean = " ".join(a_words)
+    b_clean = " ".join(b_words)
+    
+    if not a_clean or not b_clean:
+        return 0.0
+        
+    set_a = {a_clean[i:i+ngram] for i in range(len(a_clean) - ngram + 1)}
+    set_b = {b_clean[i:i+ngram] for i in range(len(b_clean) - ngram + 1)}
     if not set_a or not set_b:
         return 0.0
     return len(set_a & set_b) / len(set_a | set_b)

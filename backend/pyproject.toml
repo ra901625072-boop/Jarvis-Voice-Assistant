@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jarvis-backend"
+version = "2.0.0"
+description = "J.A.R.V.I.S. LiveKit Voice Agent Backend"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+addopts = [
+    "--tb=short",
+    "-q",
+]
+markers = [
+    "unit: Unit tests — fast, no I/O",
+    "integration: Integration tests — may require external services",
+]

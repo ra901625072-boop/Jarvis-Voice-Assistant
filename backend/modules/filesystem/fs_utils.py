@@ -18,39 +18,22 @@ def get_drives() -> list:
     return drives
 
 def is_safe_path(path: str) -> bool:
-    """Blocks destructive modifications inside system root or windows directory."""
-    try:
-        path = os.path.normpath(os.path.abspath(path))
-        path_lower = path.lower()
-        
-        system_drive = os.environ.get("SystemDrive", "C:") + "\\"
-        system_drive_lower = system_drive.lower()
-        
-        unsafe_prefixes = [
-            os.path.join(system_drive_lower, "windows"),
-            os.path.join(system_drive_lower, "program files"),
-            os.path.join(system_drive_lower, "program files (x86)"),
-            os.path.join(system_drive_lower, "system volume information"),
-            os.path.join(system_drive_lower, "$recycle.bin"),
-            os.path.join(system_drive_lower, "recovery"),
-            os.path.join(system_drive_lower, "boot")
-        ]
-        
-        drive_roots = [d.lower() for d in get_drives()]
-        if path_lower in drive_roots:
-            return False
-            
-        for prefix in unsafe_prefixes:
-            if path_lower.startswith(prefix):
-                return False
-                
-        if path_lower == "c:\\" or path_lower == "c:":
-            return False
-            
-        return True
-    except Exception as e:
-        logger.error(f"Error checking safety of path {path}: {e}")
-        return False
+    """
+    .. deprecated::
+        Use ``SecurityManager.is_safe_path()`` instead.
+
+    This shim exists only for backward compatibility.  All new code should
+    route path-safety checks through SecurityManager to avoid duplicate
+    blocklist definitions.
+    """
+    import warnings
+    warnings.warn(
+        "fs_utils.is_safe_path() is deprecated. Use SecurityManager.is_safe_path() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    from modules.core.security_manager import SecurityManager
+    return SecurityManager().is_safe_path(path)
 
 def close_explorer_window(path: str) -> bool:
     """Closes File Explorer windows matching the folder path."""

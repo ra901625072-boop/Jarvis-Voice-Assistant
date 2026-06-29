@@ -1,1179 +1,159 @@
+"""
+agent.py — Thin orchestrator (~150 lines).
+
+Responsibilities:
+  1. Eagerly initialize services via ServiceContainer (moved from GlobalRegistry).
+  2. Wire toolsets with their dependencies.
+  3. Define @server.rtc_session handler.
+  4. Configure MCP toolsets.
+
+All toolset classes live in toolsets/*.py.
+All singleton services live in container.py.
+"""
 import os
-from dotenv import load_dotenv
-
-env_path = os.path.join(os.path.dirname(__file__), ".env")
-load_dotenv(env_path, override=False)
-
-
-import time
-from functools import wraps
-
-def async_ttl_cache(ttl=300):
-    cache = {}
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            key_args = tuple(args[1:])
-            key = (func.__name__, key_args, frozenset(kwargs.items()))
-            now = time.time()
-            if key in cache:
-                result, timestamp = cache[key]
-                if now - timestamp < ttl:
-                    return result
-            result = await func(*args, **kwargs)
-            cache[key] = (result, now)
-            return result
-        return wrapper
-    return decorator
-
 import asyncio
-import inspect
+import logging
+
+from config import load_config
+load_config()
+
 from livekit import agents
 from livekit.agents import AgentServer, AgentSession, Agent, llm
-from livekit.plugins import (
-    google,
+from livekit.agents.llm.mcp import MCPServerStdio, MCPToolset
+from livekit.plugins import google
+
+from container import build_container
+from modules.core.memory_manager import MemoryManager
+from modules.planning.behavior import JarvisBehavior
+from modules.planning.task_planner import TaskPlannerTools
+from modules.skills.registry import SkillRegistry
+
+# ── Import all toolsets from the new package ──────────────────────────────────
+from toolsets import (
+    SystemTools,
+    WindowTools,
+    AppTools,
+    BrowserTools,
+    MediaTools,
+    KeyboardTools,
+    MouseTools,
+    FileTools,
+    TaskTools,
+    MemoryTools,
+    VisionTools,
+    VerificationTools,
 )
 
-# Lazy-loaded controllers will be imported on demand.
-from modules.core.memory_manager import MemoryManager
-from modules.core.security_manager import SecurityManager
-from modules.core.cognitive_coordinator import CognitiveCoordinator
-from modules.execution.executive_controller import ExecutiveController
-from modules.planning.behavior import JarvisBehavior
-from modules.planning.task_manager import BackgroundTaskManager, TaskStatus
-from modules.planning.task_planner import TaskPlannerTools
-from modules.execution.world_state import WorldStateManager
-from modules.execution.verification_engine import VerificationEngine
-from modules.filesystem.fs_utils import is_safe_path
-
-# Initialize global background task manager
-_db_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "database")
-os.makedirs(_db_dir, exist_ok=True)
-task_manager = BackgroundTaskManager(db_path=os.path.join(_db_dir, "tasks.db"))
-_task_manager_started = False
-
-def _ensure_task_manager():
-    global _task_manager_started
-    if not _task_manager_started:
-        task_manager.start()
-        _task_manager_started = True
-
-_global_file_mgr = None
-_global_folder_mgr = None
-
-def _get_file_mgr():
-    global _global_file_mgr
-    if _global_file_mgr is None:
-        from modules.filesystem.file_manager import FileManager
-        _global_file_mgr = FileManager()
-    return _global_file_mgr
-
-def _get_folder_mgr():
-    global _global_folder_mgr
-    if _global_folder_mgr is None:
-        from modules.filesystem.folder_manager import FolderManager
-        _global_folder_mgr = FolderManager(file_mgr=_get_file_mgr())
-    return _global_folder_mgr
-
-class GlobalRegistry:
-    _screen_observer = None
-    _ui_mapper = None
-    _action_verifier = None
-
-    @classmethod
-    def get_screen_observer(cls):
-        if cls._screen_observer is None:
-            from modules.perception.screen_observer import ScreenObserver
-            cls._screen_observer = ScreenObserver(cache_duration=3.0)
-        return cls._screen_observer
-
-    @classmethod
-    def get_ui_mapper(cls):
-        if cls._ui_mapper is None:
-            from modules.perception.ui_mapper import UIMapper
-            cls._ui_mapper = UIMapper(observer=cls.get_screen_observer())
-        return cls._ui_mapper
-
-    @classmethod
-    def get_action_verifier(cls):
-        if cls._action_verifier is None:
-            from modules.planning.action_verifier import ActionVerifier
-            cls._action_verifier = ActionVerifier(observer=cls.get_screen_observer())
-        return cls._action_verifier
-
-def handle_move_file(context, src, dest):
-    context.update_progress(10)
-    res = _get_file_mgr().move_item(src, dest, force_sync=True)
-    if isinstance(res, str) and res.startswith("Error:"):
-        raise RuntimeError(res)
-    context.update_progress(100)
-    return res
-
-def handle_move_folder(context, src, dest):
-    context.update_progress(10)
-    res = _get_folder_mgr().move_folder(src, dest, force_sync=True)
-    if isinstance(res, str) and res.startswith("Error:"):
-        raise RuntimeError(res)
-    context.update_progress(100)
-    return res
-
-def handle_copy_file(context, src, dest):
-    context.update_progress(10)
-    res = _get_file_mgr().copy_item(src, dest)
-    if isinstance(res, str) and res.startswith("Error:"):
-        raise RuntimeError(res)
-    context.update_progress(100)
-    return res
-
-def handle_copy_folder(context, src, dest):
-    context.update_progress(10)
-    res = _get_folder_mgr().copy_folder(src, dest)
-    if isinstance(res, str) and res.startswith("Error:"):
-        raise RuntimeError(res)
-    context.update_progress(100)
-    return res
-
-# Register handlers and start background task runner
-task_manager.register_handler("move_file", handle_move_file)
-task_manager.register_handler("move_folder", handle_move_folder)
-task_manager.register_handler("copy_file", handle_copy_file)
-task_manager.register_handler("copy_folder", handle_copy_folder)
-# task_manager is started on-demand via _ensure_task_manager()
-
-class JarvisToolset(llm.Toolset):
-    def __init__(self, security: SecurityManager = None, room=None):
-        super().__init__(id=self.__class__.__name__.lower())
-        self.security = security
-        self.room = room
-
-    async def safe_execute(
-        self, func, *args,
-        confirmation_category=None, confirmation_action=None,
-        confirmed=False, success_msg=None, error_msg=None,
-    ):
-        import time as _time
-        tool_name = getattr(func, "__name__", str(func))
-        t0 = _time.monotonic()
-        try:
-            if self.room:
-                msg = '{"type": "processing_start"}'
-                await self.room.local_participant.publish_data(msg.encode('utf-8'))
-
-            if confirmation_category and confirmation_action and self.security:
-                if self.security.requires_confirmation(confirmation_category, confirmation_action) and not confirmed:
-                    return (
-                        f"SECURITY WARNING: This action requires user confirmation. "
-                        f"Please ask the user to confirm they want to {confirmation_action}. "
-                        f"Once they agree, call this tool again with confirmed=True."
-                    )
-
-            if inspect.iscoroutinefunction(func):
-                result = await func(*args)
-            else:
-                result = await asyncio.to_thread(func, *args)
-            exec_ms = int((_time.monotonic() - t0) * 1000)
-            
-            import logging
-            logging.getLogger("JARVIS.Tool").info(f"Tool execution [{tool_name}]: {exec_ms/1000.0:.3f}s")
-
-            is_error = (
-                result is False
-                or (isinstance(result, str) and result.startswith("Error:"))
-            )
-
-            # Phase 5: auto-record tool outcome to tool_memory
-            try:
-                if hasattr(self, 'memory') and hasattr(self.memory, 'lifecycle'):
-                    self.memory.lifecycle.tool_memory.record(
-                        tool_name, not is_error, exec_ms,
-                        error=str(result)[:200] if is_error else None,
-                    )
-            except Exception:
-                pass
-
-            if is_error:
-                return error_msg or result or "Failed to execute tool."
-            if result is True and success_msg:
-                return success_msg
-            if success_msg:
-                return success_msg
-            return result
-
-        except Exception as e:
-            exec_ms = int((_time.monotonic() - t0) * 1000)
-            # Record failure
-            try:
-                if hasattr(self, 'memory') and hasattr(self.memory, 'lifecycle'):
-                    self.memory.lifecycle.tool_memory.record(
-                        tool_name, False, exec_ms, error=str(e)[:200]
-                    )
-            except Exception:
-                pass
-            return f"Error: {e}"
-
-class VerificationTools(JarvisToolset):
-    def __init__(self, verification: VerificationEngine, security: SecurityManager, room=None):
-        super().__init__(security, room)
-        self.verification = verification
-
-    @llm.function_tool(
-        description="Programmatically verify the outcome of an action. "
-                    "MUST be called after taking an action like opening an app or creating a file to confirm success. "
-                    "condition_type: 'process_running', 'window_exists', 'file_exists', 'clipboard_contains'. "
-                    "target: process name (e.g., 'chrome'), window title, file path, or clipboard text."
-    )
-    async def verify_execution(self, condition_type: str, target: str) -> str:
-        # We need access to state_manager to update state to VERIFYING
-        from modules.core.state_manager import AgentStateManager, AgentState
-        sm = AgentStateManager()
-        sm.set_agent_state(AgentState.VERIFYING)
-        
-        result = await asyncio.to_thread(self.verification.verify, condition_type, target)
-        
-        # Revert state back to EXECUTING after verification
-        sm.set_agent_state(AgentState.EXECUTING)
-        
-        if result:
-            return f"Verification SUCCESS: {condition_type} -> '{target}' is TRUE."
-        else:
-            return f"Verification FAILED: {condition_type} -> '{target}' is FALSE."
-
-class SystemTools(JarvisToolset):
-    def __init__(self, security: SecurityManager, room=None):
-        super().__init__(security, room)
-        self._system_ctrl = None
-
-    @property
-    def system_ctrl(self):
-        if self._system_ctrl is None:
-            from modules.controls.system_controller import SystemController
-            self._system_ctrl = SystemController()
-        return self._system_ctrl
-
-
-
-    @llm.function_tool(description="Shutdown the computer system. Requires user confirmation.")
-    async def shutdown_system(self, confirmed: bool = False) -> str:
-        return await self.safe_execute(self.system_ctrl.shutdown, confirmation_category="power", confirmation_action="shutdown", confirmed=confirmed, success_msg="Shutting down the system...")
-
-    @llm.function_tool(description="Restart the computer system. Requires user confirmation.")
-    async def restart_system(self, confirmed: bool = False) -> str:
-        return await self.safe_execute(self.system_ctrl.restart, confirmation_category="power", confirmation_action="restart", confirmed=confirmed, success_msg="Restarting the system...")
-
-    @llm.function_tool(description="Put the computer to sleep.")
-    async def sleep_system(self) -> str:
-        return await self.safe_execute(self.system_ctrl.sleep, success_msg="System entering sleep mode.")
-
-    @llm.function_tool(description="Lock the computer workstation.")
-    async def lock_pc(self) -> str:
-        return await self.safe_execute(self.system_ctrl.lock_pc, success_msg="Workstation locked.")
-
-    @llm.function_tool(description="Log out the current user.")
-    async def logout_user(self, confirmed: bool = False) -> str:
-        return await self.safe_execute(self.system_ctrl.logout, confirmation_category="power", confirmation_action="logout", confirmed=confirmed, success_msg="Logging out...")
-
-    @llm.function_tool(description="Copy text to the system clipboard.")
-    async def copy_to_clipboard(self, text: str) -> str:
-        return await self.safe_execute(self.system_ctrl.copy_text, text, success_msg="Text copied to clipboard.")
-
-    @llm.function_tool(description="Get the current text from the system clipboard.")
-    async def get_from_clipboard(self) -> str:
-        content = await self.safe_execute(self.system_ctrl.get_clipboard)
-        return f"Clipboard content: {content}" if not str(content).startswith("Error:") and content else "Clipboard is empty."
-
-    @llm.function_tool(description="Clear the system clipboard.")
-    async def clear_clipboard(self) -> str:
-        return await self.safe_execute(self.system_ctrl.clear_clipboard, success_msg="Clipboard cleared.")
-
-    @llm.function_tool(description="Take a screenshot of the computer screen.")
-    async def take_screenshot(self) -> str:
-        result = await self.safe_execute(self.system_ctrl.take_screenshot)
-        if result is True or (isinstance(result, str) and not result.startswith("Error:")):
-            path = os.path.abspath("screenshot.jpg")
-            return f"Screenshot saved at {path}"
-        return str(result)
-
-    @llm.function_tool(description="Open the Windows system settings app.")
-    async def open_settings(self) -> str:
-        return await self.safe_execute(self.system_ctrl.open_settings, success_msg="Settings opened.")
-
-class WindowTools(JarvisToolset):
-    def __init__(self, security: SecurityManager, room=None):
-        super().__init__(security, room)
-        self._window_ctrl = None
-
-    @property
-    def window_ctrl(self):
-        if self._window_ctrl is None:
-            from modules.controls.window_controller import WindowController
-            self._window_ctrl = WindowController()
-        return self._window_ctrl
-
-    @llm.function_tool(description="Minimize a window by its title keyword, or the active window if none provided.")
-    async def minimize_window(self, title_keyword: str = None) -> str:
-        return await self.safe_execute(self.window_ctrl.minimize_window, title_keyword, success_msg="Window minimized.", error_msg="Failed to find or minimize window.")
-
-    @llm.function_tool(description="Maximize a window by its title keyword, or the active window if none provided.")
-    async def maximize_window(self, title_keyword: str = None) -> str:
-        return await self.safe_execute(self.window_ctrl.maximize_window, title_keyword, success_msg="Window maximized.", error_msg="Failed to find or maximize window.")
-
-    @llm.function_tool(description="Restore a window to its normal size by its title keyword, or the active window if none provided.")
-    async def restore_window(self, title_keyword: str = None) -> str:
-        return await self.safe_execute(self.window_ctrl.restore_window, title_keyword, success_msg="Window restored.", error_msg="Failed to find or restore window.")
-
-    @llm.function_tool(description="Close a window by its title keyword, or the active window if none provided.")
-    async def close_window(self, title_keyword: str = None) -> str:
-        return await self.safe_execute(self.window_ctrl.close_window, title_keyword, success_msg="Window closed.", error_msg="Failed to find or close window.")
-
-    @llm.function_tool(description="Bring a window to the foreground and focus it by its title keyword.")
-    async def focus_window(self, title_keyword: str = None) -> str:
-        return await self.safe_execute(self.window_ctrl.focus_window, title_keyword, success_msg="Window focused.", error_msg="Failed to find or focus window.")
-
-    @llm.function_tool(description="Switch to the next window (simulates Alt+Tab).")
-    async def switch_window(self) -> str:
-        return await self.safe_execute(self.window_ctrl.switch_window, success_msg="Switched window.")
-
-    @llm.function_tool(description="Show the desktop (minimizes all windows).")
-    async def show_desktop(self) -> str:
-        return await self.safe_execute(self.window_ctrl.show_desktop, success_msg="Showing desktop.")
-
-class AppTools(JarvisToolset):
-    def __init__(self, security: SecurityManager, room=None):
-        super().__init__(security, room)
-        self._app_ctrl = None
-
-    @property
-    def app_ctrl(self):
-        if self._app_ctrl is None:
-            from modules.controls.app_controller import AppController
-            self._app_ctrl = AppController()
-        return self._app_ctrl
-
-    @llm.function_tool(description="Open an application by its name (e.g., notepad, calculator, chrome)")
-    async def open_application(self, app_name: str) -> str:
-        return await self.safe_execute(self.app_ctrl.open_app, app_name, success_msg=f"Successfully opened {app_name}.", error_msg=f"Failed to open {app_name}.")
-
-    @llm.function_tool(description="Close a running application by its name")
-    async def close_application(self, app_name: str) -> str:
-        return await self.safe_execute(self.app_ctrl.close_app, app_name, success_msg=f"Attempted to close {app_name}.")
-
-class BrowserTools(JarvisToolset):
-    def __init__(self, security: SecurityManager, room=None):
-        super().__init__(security, room)
-        self._browser_ctrl = None
-
-    @property
-    def browser_ctrl(self):
-        if self._browser_ctrl is None:
-            from modules.controls.browser_controller import BrowserController
-            self._browser_ctrl = BrowserController()
-        return self._browser_ctrl
-
-    @llm.function_tool(description="Open a specific URL in the browser")
-    async def open_url(self, url: str) -> str:
-        from urllib.parse import urlparse
-        parsed = urlparse(url)
-        if parsed.scheme not in ["http", "https"]:
-            return "Error: Invalid URL scheme. Only http and https are allowed."
-        return await self.safe_execute(self.browser_ctrl.open_url, url, success_msg=f"Opened {url} in the browser.")
-
-    @llm.function_tool(description="Close a specific website tab by domain or title")
-    async def close_website(self, domain_or_title: str) -> str:
-        return await self.safe_execute(self.browser_ctrl.close_website, domain_or_title, success_msg=f"Closed website tab matching '{domain_or_title}'.", error_msg=f"Could not find or close website tab matching '{domain_or_title}'.")
-
-    @llm.function_tool(description="Search Google for a specific query")
-    @async_ttl_cache(ttl=300)
-    async def search_google(self, query: str) -> str:
-        return await self.safe_execute(self.browser_ctrl.search, query, success_msg=f"Performed Google search for {query}.")
-
-    @llm.function_tool(
-        description="Search live for a query, parse top results, extract page contents, and return results. By default, queries using a fast API first and falls back to browser scraping if blocked or empty. You can also explicitly request a specific engine using the engine parameter (\'google\', \'wikipedia\', \'browser_scrape\')."
-    )
-    @async_ttl_cache(ttl=300)
-    async def search_google_live(self, query: str, engine: str = "google") -> str:
-        if engine in ["google", "ddg", "fast"]:
-            try:
-                # Run fast-path duckduckgo API search
-                import asyncio
-                from duckduckgo_search import DDGS
-                
-                def _do_ddg_search():
-                    with DDGS() as ddgs:
-                        return list(ddgs.text(query, max_results=4))
-                        
-                # Run blocking DDGS in thread pool to avoid blocking async event loop
-                results = await asyncio.to_thread(_do_ddg_search)
-                if results:
-                    aggregated = f"Fast API Search Results for '{query}':\n\n"
-                    for i, res in enumerate(results, 1):
-                        aggregated += f"[{i}] TITLE: {res.get('title')}\n    URL: {res.get('href')}\n    CONTENT: {res.get('body')}\n\n"
-                    return aggregated
-            except Exception as e:
-                import logging
-                logging.getLogger("JARVIS.Agent").warning(f"Fast-path DDG search failed: {e}. Falling back to BrowserController...")
-        
-        # Fallback to the slow, deep browser scraping
-        return await self.safe_execute(self.browser_ctrl.search_live, query, 3, engine)
-
-    @llm.function_tool(description="Search YouTube for a specific query")
-    @async_ttl_cache(ttl=300)
-    async def search_youtube(self, query: str) -> str:
-        return await self.safe_execute(self.browser_ctrl.search_youtube, query, success_msg=f"Performed YouTube search for {query}.")
-
-    @llm.function_tool(description="Search YouTube and automatically play the first video result")
-    async def play_youtube(self, query: str) -> str:
-        return await self.safe_execute(self.browser_ctrl.play_youtube, query, success_msg=f"Playing YouTube video for {query}.")
-
-    @llm.function_tool(description="Switch to a browser tab matching a keyword")
-    async def switch_tab(self, keyword: str) -> str:
-        return await self.safe_execute(self.browser_ctrl.switch_tab, keyword, success_msg=f"Switched to tab matching {keyword}.", error_msg=f"No tab found matching {keyword}.")
-
-    @llm.function_tool(description="List all open browser tabs")
-    async def list_tabs(self) -> str:
-        tabs = await self.safe_execute(self.browser_ctrl.list_tabs)
-        if str(tabs).startswith("Error:"): return str(tabs)
-        if not tabs: return "No tabs are open or browser is not running."
-        formatted = "Open tabs:\n" + "\n".join([f"- {t['title']} ({t['url']})" for t in tabs])
-        return formatted
-
-    @llm.function_tool(description="Refresh the current browser tab")
-    async def refresh_tab(self) -> str:
-        return await self.safe_execute(self.browser_ctrl.refresh_tab, success_msg="Refreshed the current tab.")
-
-    @llm.function_tool(description="Go back to the previous page in the browser")
-    async def browser_go_back(self) -> str:
-        return await self.safe_execute(self.browser_ctrl.go_back, success_msg="Navigated back.")
-
-    @llm.function_tool(description="Go forward to the next page in the browser")
-    async def browser_go_forward(self) -> str:
-        return await self.safe_execute(self.browser_ctrl.go_forward, success_msg="Navigated forward.")
-
-    @llm.function_tool(description="Get the title and URL of the current browser page")
-    async def get_current_page_info(self) -> str:
-        info = await self.safe_execute(self.browser_ctrl.get_current_page_info)
-        if str(info).startswith("Error:"): return str(info)
-        return f"Currently viewing: {info.get('title')} at {info.get('url')}."
-
-class MediaTools(JarvisToolset):
-    def __init__(self, security: SecurityManager, room=None):
-        super().__init__(security, room)
-        self._volume_ctrl = None
-        self._brightness_ctrl = None
-
-    @property
-    def volume_ctrl(self):
-        if self._volume_ctrl is None:
-            from modules.controls.volume_controller import VolumeController
-            self._volume_ctrl = VolumeController()
-        return self._volume_ctrl
-
-    @property
-    def brightness_ctrl(self):
-        if self._brightness_ctrl is None:
-            from modules.controls.brightness_controller import BrightnessController
-            self._brightness_ctrl = BrightnessController()
-        return self._brightness_ctrl
-
-    @llm.function_tool(description="Set the system volume to a specific percentage (0-100)")
-    async def set_volume(self, level: int) -> str:
-        return await self.safe_execute(self.volume_ctrl.set_volume, level, success_msg=f"Volume set to {level}%.")
-
-    @llm.function_tool(description="Mute the system audio")
-    async def mute_audio(self) -> str:
-        return await self.safe_execute(self.volume_ctrl.mute, success_msg="Audio muted.")
-
-    @llm.function_tool(description="Unmute the system audio")
-    async def unmute_audio(self) -> str:
-        return await self.safe_execute(self.volume_ctrl.unmute, success_msg="Audio unmuted.")
-
-    @llm.function_tool(description="Set the system display brightness to a specific percentage (0-100)")
-    async def set_brightness(self, level: int) -> str:
-        return await self.safe_execute(self.brightness_ctrl.set_brightness, level, success_msg=f"Brightness set to {level}%.")
-
-class KeyboardTools(JarvisToolset):
-    def __init__(self, security: SecurityManager, room=None):
-        super().__init__(security, room)
-        self._keyboard_ctrl = None
-
-    @property
-    def keyboard_ctrl(self):
-        if self._keyboard_ctrl is None:
-            from modules.controls.keyboard_controller import KeyboardController
-            self._keyboard_ctrl = KeyboardController()
-        return self._keyboard_ctrl
-
-    @llm.function_tool(description="Type a given text string exactly using the keyboard")
-    async def type_text(self, text: str, confirmed: bool = False) -> str:
-        if len(text) > 500 and not confirmed:
-            return "SECURITY WARNING: The text is too long. Please ask the user to confirm they want to type this much text. Call again with confirmed=True."
-        return await self.safe_execute(self.keyboard_ctrl.type_text, text, success_msg="Typed the given text.")
-
-    @llm.function_tool(description="Press a specific key or key combination string (e.g., 'enter', 'ctrl+c', 'win+d')")
-    async def press_key(self, keys: str) -> str:
-        return await self.safe_execute(self.keyboard_ctrl.press_key, keys, success_msg=f"Pressed keys: {keys}.")
-
-    @llm.function_tool(description="Hold down a specific key (e.g., 'shift', 'ctrl', 'a')")
-    async def hold_key(self, key: str) -> str:
-        return await self.safe_execute(self.keyboard_ctrl.hold_key, key, success_msg=f"Held down key: {key}.")
-
-    @llm.function_tool(description="Release a specific key that was previously held down")
-    async def release_key(self, key: str) -> str:
-        return await self.safe_execute(self.keyboard_ctrl.release_key, key, success_msg=f"Released key: {key}.")
-
-class MouseTools(JarvisToolset):
-    def __init__(self, security: SecurityManager, room=None):
-        super().__init__(security, room)
-        self._mouse_ctrl = None
-
-    @property
-    def mouse_ctrl(self):
-        if self._mouse_ctrl is None:
-            from modules.controls.mouse_controller import MouseController
-            self._mouse_ctrl = MouseController()
-        return self._mouse_ctrl
-
-    @llm.function_tool(description="Left click the mouse at its current location, or optionally at specified x,y coordinates")
-    async def click_mouse(self, x: int = None, y: int = None) -> str:
-        return await self.safe_execute(self.mouse_ctrl.click, x, y, success_msg="Mouse left-clicked.")
-
-    @llm.function_tool(description="Double left click the mouse at its current location, or optionally at specified x,y coordinates")
-    async def double_click_mouse(self, x: int = None, y: int = None) -> str:
-        return await self.safe_execute(self.mouse_ctrl.double_click, x, y, success_msg="Mouse double-clicked.")
-
-    @llm.function_tool(description="Right click the mouse at its current location, or optionally at specified x,y coordinates")
-    async def right_click_mouse(self, x: int = None, y: int = None) -> str:
-        return await self.safe_execute(self.mouse_ctrl.right_click, x, y, success_msg="Mouse right-clicked.")
-
-    @llm.function_tool(description="Move the mouse cursor to the specified absolute x,y coordinates on the screen")
-    async def move_mouse(self, x: int, y: int) -> str:
-        return await self.safe_execute(self.mouse_ctrl.move, x, y, success_msg=f"Mouse moved to {x},{y}.")
-
-    @llm.function_tool(description="Scroll the mouse wheel. Positive amount scrolls up, negative amount scrolls down")
-    async def scroll_mouse(self, amount: int) -> str:
-        return await self.safe_execute(self.mouse_ctrl.scroll, amount, success_msg=f"Mouse scrolled by {amount}.")
-
-    @llm.function_tool(description="Get the current x,y coordinates of the mouse cursor")
-    async def get_mouse_position(self) -> str:
-        res = await self.safe_execute(self.mouse_ctrl.get_position)
-        if isinstance(res, tuple):
-            x, y = res
-            return f"Mouse is currently at {x},{y}."
-        return str(res)
-
-
-
-class FileTools(JarvisToolset):
-    def __init__(self, security: SecurityManager, room=None):
-        super().__init__(security, room)
-
-    @property
-    def file_mgr(self):
-        return _get_file_mgr()
-
-    @property
-    def folder_mgr(self):
-        return _get_folder_mgr()
-
-    @llm.function_tool(description="Resolve a file or folder query like 'my resume' or 'PythonProjects' into an absolute path")
-    async def resolve_file_path(self, query: str) -> str:
-        path = await self.safe_execute(self.file_mgr.resolve_path, query)
-        if str(path).startswith("Error:"): return str(path)
-        if isinstance(path, list):
-            options = "\n".join([f"- {p}" for p in path])
-            return f"AMBIGUOUS_MATCHES: Multiple items found matching '{query}'. Please ask the user to clarify which one they want:\n{options}"
-        return f"Resolved to: {path}" if path else f"Could not find any file or folder matching '{query}'."
-
-    @llm.function_tool(description="Search for a file or folder by name starting from a root directory or default user directory")
-    async def search_file(self, filename: str, root_dir: str = None) -> str:
-        results = await self.safe_execute(self.file_mgr.search_file, filename, root_dir)
-        if str(results).startswith("Error:"): return str(results)
-        if not results: return f"No file or folder results found for {filename}."
-        return f"Found {len(results)} results: {', '.join(results[:5])}" + ("..." if len(results) > 5 else "")
-
-    @llm.function_tool(description="Create a new folder at the specified path")
-    async def create_folder(self, path: str) -> str:
-        return await self.safe_execute(self.folder_mgr.create_folder, path, success_msg=f"Folder {path} created.")
-
-    @llm.function_tool(description="Create a new file with optional content at the specified path")
-    async def create_file(self, path: str, content: str = "") -> str:
-        return await self.safe_execute(self.file_mgr.create_file, path, content, success_msg=f"File {path} created.", error_msg=f"Failed to create file {path}.")
-
-    @llm.function_tool(description="Read the contents of a text file")
-    async def read_file(self, path: str) -> str:
-        content = await self.safe_execute(self.file_mgr.read_file, path)
-        if str(content).startswith("Error:"): return str(content)
-        if content is None: return f"Failed to read file {path}."
-        return f"File contents:\n{content[:2000]}" + ("...\n[Content Truncated]" if len(content) > 2000 else "")
-
-    @llm.function_tool(description="Delete a file or folder at the specified path. Requires confirmation.")
-    async def delete_item(self, path: str, confirmed: bool = False) -> str:
-        if os.path.isdir(path):
-            return await self.safe_execute(self.folder_mgr.delete_folder, path, confirmation_category="delete", confirmation_action=path, confirmed=confirmed, success_msg=f"Folder {path} deleted (moved to recycle bin).")
-        else:
-            return await self.safe_execute(self.file_mgr.delete_item, path, confirmation_category="delete", confirmation_action=path, confirmed=confirmed, success_msg=f"File {path} deleted (moved to recycle bin).")
-
-    @llm.function_tool(description="Move a file or folder from src to dest path")
-    async def move_item(self, src: str, dest: str) -> str:
-        try:
-            src_abs = os.path.normpath(os.path.abspath(src))
-            dest_abs = os.path.normpath(os.path.abspath(dest))
-            
-            if not is_safe_path(src_abs) or not is_safe_path(dest_abs):
-                return "Error: Security Policy blocks moving system folder/file."
-                
-            is_dir = os.path.isdir(src_abs)
-            src_drive = os.path.splitdrive(src_abs)[0].lower()
-            dest_drive = os.path.splitdrive(dest_abs)[0].lower()
-            is_cross_drive = src_drive != dest_drive
-            
-            if is_dir:
-                if is_cross_drive:
-                    # Queue in background task manager
-                    _ensure_task_manager()
-                    task_id = task_manager.add_task("move_folder", args=(src_abs, dest_abs))
-                    return f"The transfer of folder '{src}' to '{dest}' has started in the background (Task ID: {task_id}). You can check its status using get_background_task_status."
-                else:
-                    # Synchronous immediate move
-                    result = await self.safe_execute(self.folder_mgr.move_folder, src_abs, dest_abs)
-                    if result is True:
-                        return f"Successfully moved folder {src} to {dest}."
-                    return str(result)
-            else:
-                large_file = False
-                if is_cross_drive:
-                    try:
-                        large_file = os.path.getsize(src_abs) > 50 * 1024 * 1024
-                    except Exception:
-                        pass
-                
-                if is_cross_drive and large_file:
-                    _ensure_task_manager()
-                    task_id = task_manager.add_task("move_file", args=(src_abs, dest_abs))
-                    return f"The transfer of file '{src}' to '{dest}' has started in the background (Task ID: {task_id}). You can check its status using get_background_task_status."
-                else:
-                    result = await self.safe_execute(self.file_mgr.move_item, src_abs, dest_abs)
-                    if result is True:
-                        return f"Successfully moved file {src} to {dest}."
-                    return str(result)
-        except Exception as e:
-            return f"Error: {e}"
-
-    @llm.function_tool(description="Copy a file or folder from src to dest path")
-    async def copy_item(self, src: str, dest: str) -> str:
-        try:
-            src_abs = os.path.normpath(os.path.abspath(src))
-            dest_abs = os.path.normpath(os.path.abspath(dest))
-            
-            if not is_safe_path(src_abs) or not is_safe_path(dest_abs):
-                return "Error: Security Policy blocks copying to/from system directories."
-                
-            is_dir = os.path.isdir(src_abs)
-            src_drive = os.path.splitdrive(src_abs)[0].lower()
-            dest_drive = os.path.splitdrive(dest_abs)[0].lower()
-            is_cross_drive = src_drive != dest_drive
-            
-            if is_dir:
-                if is_cross_drive:
-                    _ensure_task_manager()
-                    task_id = task_manager.add_task("copy_folder", args=(src_abs, dest_abs))
-                    return f"Copying folder '{src}' to '{dest}' has started in the background (Task ID: {task_id}). You can check its status using get_background_task_status."
-                else:
-                    return await self.safe_execute(self.folder_mgr.copy_folder, src_abs, dest_abs, success_msg=f"Folder copied from {src} to {dest}.")
-            else:
-                large_file = False
-                if is_cross_drive:
-                    try:
-                        large_file = os.path.getsize(src_abs) > 50 * 1024 * 1024
-                    except Exception:
-                        pass
-                
-                if is_cross_drive and large_file:
-                    _ensure_task_manager()
-                    task_id = task_manager.add_task("copy_file", args=(src_abs, dest_abs))
-                    return f"Copying file '{src}' to '{dest}' has started in the background (Task ID: {task_id}). You can check its status using get_background_task_status."
-                else:
-                    return await self.safe_execute(self.file_mgr.copy_item, src_abs, dest_abs, success_msg=f"File copied from {src} to {dest}.")
-        except Exception as e:
-            return f"Error: {e}"
-
-    @llm.function_tool(description="Rename a file or folder")
-    async def rename_item(self, src: str, new_name: str) -> str:
-        if os.path.isdir(src):
-            return await self.safe_execute(self.folder_mgr.rename_folder, src, new_name, success_msg=f"Folder renamed from {src} to {new_name}.")
-        else:
-            return await self.safe_execute(self.file_mgr.rename_item, src, new_name, success_msg=f"File renamed from {src} to {new_name}.")
-
-    @llm.function_tool(description="Open a file or folder natively in the OS")
-    async def open_item(self, path: str) -> str:
-        return await self.safe_execute(self.file_mgr.open_item, path, success_msg=f"Opened {path}.")
-
-    @llm.function_tool(description="Get size, creation date, and metadata about a file")
-    async def get_file_info(self, path: str) -> str:
-        info = await self.safe_execute(self.file_mgr.get_file_info, path)
-        if str(info).startswith("Error:"): return str(info)
-        return f"File Info: {info}" if info else f"Failed to get info for {path}."
-
-    @llm.function_tool(description="List the contents of a directory")
-    async def list_directory(self, path: str) -> str:
-        items = await self.safe_execute(self.folder_mgr.list_directory, path)
-        if str(items).startswith("Error:"): return str(items)
-        return f"Directory contains {len(items)} items: {', '.join(items[:20])}" + ("..." if len(items) > 20 else "")
-
-    @llm.function_tool(description="Close an open folder window or file window")
-    async def close_item(self, path: str) -> str:
-        if os.path.isdir(path):
-            return await self.safe_execute(self.folder_mgr.close_folder, path, success_msg=f"Attempted to close folder window {path}.")
-        else:
-            return await self.safe_execute(self.file_mgr.close_item, path, success_msg=f"Attempted to close file window {path}.")
-
-class TaskTools(JarvisToolset):
-    def __init__(self, security: SecurityManager, room=None):
-        super().__init__(security, room)
-
-    @llm.function_tool(description="List all recent background tasks and their statuses")
-    async def list_background_tasks(self, limit: int = 10) -> str:
-        try:
-            tasks = await asyncio.to_thread(task_manager.get_all_tasks, limit)
-            if not tasks:
-                return "No background tasks have been registered yet."
-            
-            lines = []
-            for t in tasks:
-                status = t.get("status", "unknown")
-                prog = t.get("progress", 0)
-                err = f", Error: {t['error']}" if t.get("error") else ""
-                lines.append(f"- Task ID: {t['task_id']}, Type: {t['task_type']}, Status: {status}, Progress: {prog}%{err}")
-            return "Recent background tasks:\n" + "\n".join(lines)
-        except Exception as e:
-            return f"Error retrieving tasks: {e}"
-
-    @llm.function_tool(description="Get the detailed status of a specific background task by its ID")
-    async def get_background_task_status(self, task_id: str) -> str:
-        try:
-            task = await asyncio.to_thread(task_manager.get_task, task_id)
-            if not task:
-                # If not in active memory, check all tasks via get_all_tasks
-                all_tasks = await asyncio.to_thread(task_manager.get_all_tasks, 100)
-                for t in all_tasks:
-                    if t["task_id"] == task_id:
-                        status = t.get("status", "unknown")
-                        prog = t.get("progress", 0)
-                        err = f"\nError: {t['error']}" if t.get("error") else ""
-                        res = f"\nResult: {t['result']}" if t.get("result") else ""
-                        return f"Task ID: {task_id}\nType: {t['task_type']}\nStatus: {status}\nProgress: {prog}%{res}{err}"
-                return f"Task '{task_id}' not found."
-            
-            info = task.to_dict()
-            err = f"\nError: {info['error']}" if info.get("error") else ""
-            res = f"\nResult: {info['result']}" if info.get("result") else ""
-            return f"Task ID: {task_id}\nType: {info['task_type']}\nStatus: {info['status']}\nProgress: {info['progress']}%{res}{err}"
-        except Exception as e:
-            return f"Error: {e}"
-
-    @llm.function_tool(description="Cancel a running or queued background task by its ID")
-    async def cancel_background_task(self, task_id: str) -> str:
-        try:
-            cancelled = await asyncio.to_thread(task_manager.cancel_task, task_id)
-            if cancelled:
-                return f"Task '{task_id}' was successfully cancelled."
-            else:
-                return f"Could not cancel task '{task_id}'. It may not exist, or it has already completed, failed, or been cancelled."
-        except Exception as e:
-            return f"Error: {e}"
-
-class MemoryTools(JarvisToolset):
-    def __init__(self, memory: MemoryManager, security: SecurityManager, room=None):
-        super().__init__(security, room)
-        self.memory = memory
-        self._coordinator = None
-        self._executive_controller = None
-
-    @property
-    def coordinator(self):
-        if self._coordinator is None and hasattr(self.memory, 'lifecycle'):
-            from modules.core.cognitive_coordinator import CognitiveCoordinator
-            self._coordinator = CognitiveCoordinator(self.memory)
-        return self._coordinator
-
-    @property
-    def executive_controller(self):
-        if self._executive_controller is None:
-            from modules.execution.executive_controller import ExecutiveController
-            self._executive_controller = ExecutiveController(self.memory, self.coordinator)
-        return self._executive_controller
-
-    @llm.function_tool(description="Remember a preference or fact about the user for long-term storage")
-    async def remember_preference(self, key: str, value: str) -> str:
-        return await self.safe_execute(self.memory.set_preference, key, value, success_msg=f"Remembered that {key} is {value}.")
-
-    @llm.function_tool(description="Retrieve a preference or fact about the user from long-term storage")
-    async def get_preference(self, key: str) -> str:
-        val = await self.safe_execute(self.memory.get_preference, key)
-        if str(val).startswith("Error:"): return str(val)
-        if val is None: return f"No preference found for {key}."
-        return f"Preference for {key} is {val}."
-
-    @llm.function_tool(description="Delete a preference or fact from long-term storage")
-    async def delete_preference(self, key: str) -> str:
-        deleted = await self.safe_execute(self.memory.delete_preference, key)
-        if str(deleted).startswith("Error:"): return str(deleted)
-        if deleted: return f"Deleted preference for {key}."
-        return f"No preference found to delete for {key}."
-
-    @llm.function_tool(description="Search conversation history semantically for specific keywords or topics")
-    async def search_memory(self, query: str) -> str:
-        results = await self.safe_execute(self.memory.search_history, query)
-        if str(results).startswith("Error:"): return str(results)
-        if not results: return f"No memories found matching '{query}'."
-        formatted = f"Found {len(results)} matching memories:\n"
-        for r in results:
-            formatted += f"- [{r.get('timestamp','?')}] {r.get('role','?')}: {r.get('content','')[:120]}...\n"
-        return formatted
-
-    @llm.function_tool(description="Clear all conversation history. Requires user confirmation.")
-    async def clear_history(self, confirmed: bool = False) -> str:
-        return await self.safe_execute(self.memory.clear_history, confirmation_category="delete", confirmation_action="memory_history", confirmed=confirmed, success_msg="Conversation history cleared.")
-
-    # ── New memory tools ──────────────────────────────────────────────── #
-
-    @llm.function_tool(
-        description="Explicitly store an important fact, experience, or skill into JARVIS long-term memory. "
-                    "Use memory_type='semantic' for facts, 'episodic' for past events, 'procedural' for how-to knowledge. "
-                    "Optionally specify the project (e.g., 'JARVIS', 'nova', 'react') to namespace the memory."
-    )
-    async def store_memory(
-        self, content: str, memory_type: str = "semantic", project: str = "general", importance: int = 7
-    ) -> str:
-        row_id = await self.safe_execute(
-            self.memory.store_memory, content, memory_type, project, importance, None
-        )
-        if isinstance(row_id, str) and row_id.startswith("Error:"):
-            return row_id
-        return (
-            f"Memory stored (ID: {row_id}, type: {memory_type}, project: {project}, importance: {importance}/10)."
-        )
-
-    @llm.function_tool(
-        description="Search typed long-term memory for a query. "
-                    "Optionally filter by memory_type ('semantic', 'episodic', 'procedural') "
-                    "and/or project name (e.g., 'JARVIS', 'nova', 'react')."
-    )
-    async def search_typed_memory(
-        self, query: str, memory_type: str = None, project: str = None
-    ) -> str:
-        results = await self.safe_execute(
-            self.memory.search_memories, query, memory_type, project, 5
-        )
-        if isinstance(results, str) and results.startswith("Error:"):
-            return results
-        if not results:
-            return f"No typed memories found matching '{query}'."
-        lines = [f"Found {len(results)} memories:"]
-        for r in results:
-            lines.append(
-                f"- [{r.get('memory_type', 'unknown')}][{r.get('project', 'unknown')}] (imp:{r.get('importance', 5)}) "
-                f"{r.get('content', '')[:150]}..."
-            )
-        return "\n".join(lines)
-
-    @llm.function_tool(
-        description="Get all memories JARVIS has about a specific project (e.g., 'JARVIS', 'nova', 'react'). "
-                    "Use this to recall everything known about a project before starting work on it."
-    )
-    async def get_project_context(self, project_name: str) -> str:
-        res = await self.safe_execute(self.memory.get_project_context, project_name)
-        return str(res)
-
-    @llm.function_tool(
-        description="Store a fact about how two things are related in JARVIS knowledge graph. "
-                    "Example: entity_a='Akshay', relation='builds', entity_b='JARVIS'. "
-                    "Or: entity_a='JARVIS', relation='uses', entity_b='Selenium'."
-    )
-    async def add_knowledge(
-        self, entity_a: str, relation: str, entity_b: str
-    ) -> str:
-        await self.safe_execute(self.memory.add_entity, entity_a, "concept", "")
-        await self.safe_execute(self.memory.add_entity, entity_b, "concept", "")
-        res = await self.safe_execute(self.memory.add_relationship, entity_a, relation, entity_b, 1.0)
-        if isinstance(res, str) and res.startswith("Error:"): return res
-        return f"Knowledge stored: {entity_a} → {relation} → {entity_b}."
-
-    @llm.function_tool(
-        description="Get recent JARVIS self-reflections — insights about user habits, workflow patterns, "
-                    "and lessons learned. Specify days (default 7) to look back."
-    )
-    async def get_agent_reflections(self, days: int = 7) -> str:
-        reflections = await self.safe_execute(self.memory.get_agent_reflections, days)
-        if isinstance(reflections, str) and reflections.startswith("Error:"): return reflections
-        if not reflections:
-            return f"No reflections generated in the past {days} days."
-        lines = [f"Agent Reflections (Past {days} days):"]
-        for idx, r in enumerate(reflections, 1):
-            lines.append(f"{idx}. [{r.get('period', 'daily')}] {r.get('created_at', '')[:10]}")
-            lines.append(f"   {r.get('reflection', '')}")
-            lines.append("")
-        return "\n".join(lines)
-
-    @llm.function_tool(
-        description="Restore the last saved agent state after a restart or crash. "
-                    "Returns the previous goal and plan so JARVIS can resume where it left off."
-    )
-    async def restore_agent_state(self) -> str:
-        saved = await asyncio.to_thread(self.memory.restore_agent_state)
-        if not saved:
-            return "No saved agent state found. Starting fresh."
-        goal = saved.get("current_goal", "Unknown")
-        plan = saved.get("active_plan")
-        saved_at = saved.get("saved_at", "unknown time")
-        if plan:
-            tasks = plan.get("subtasks", [])
-            pending = [t["description"] for t in tasks if t.get("status") == "pending"]
-            return (
-                f"Restored state from {saved_at}.\n"
-                f"Previous goal: {goal}\n"
-                f"Pending tasks: {pending}"
-            )
-        return f"Restored state from {saved_at}. Previous goal: {goal}. No active plan."
-
-    # ── Phase 5 cognitive tools ───────────────────────────────────────── #
-
-    @llm.function_tool(
-        description="Query the Executive Controller for the current state, top priorities, and immediate directives. "
-                    "Use this when you are unsure what to do next or if the system seems stuck."
-    )
-    async def get_executive_summary(self) -> str:
-        return self.executive_controller.get_executive_summary()
-
-    @llm.function_tool(
-        description="Set or update an active ROOT goal for JARVIS. "
-                    "Goals influence which memories are retrieved (goal-relevance scoring). "
-                    "Priority 1-10 (10=highest). Optionally specify project name. "
-                    "Goal type defaults to 'strategic' or 'project'."
-    )
-    async def set_active_goal(
-        self, goal: str, goal_type: str = "strategic", priority: int = 7, project: str = "general"
-    ) -> str:
-        goal_id = await asyncio.to_thread(
-            self.memory.lifecycle.goal_memory.set_goal, goal, goal_type, None, priority, project
-        )
-        return f"Root Goal set (ID: {goal_id}): '{goal}' [{goal_type}, priority {priority}/10, project: {project}]."
-
-    @llm.function_tool(
-        description="Add a nested sub-goal to an existing goal. "
-                    "Use this to break down strategic goals into project/task/action goals. "
-                    "goal_type can be 'project', 'task', or 'action'."
-    )
-    async def add_sub_goal(self, parent_id: int, goal: str, goal_type: str = "task", priority: int = 5) -> str:
-        goal_id = await asyncio.to_thread(
-            self.memory.lifecycle.goal_memory.add_sub_goal, parent_id, goal, goal_type, priority
-        )
-        return f"Sub-goal set (ID: {goal_id}) under Parent {parent_id}: '{goal}' [{goal_type}]."
-
-    @llm.function_tool(
-        description="List all active goals JARVIS is currently tracking. "
-                    "Displays the full goal hierarchy (Strategic -> Project -> Task -> Action)."
-    )
-    async def list_active_goals(self) -> str:
-        context_str = await asyncio.to_thread(
-            self.memory.lifecycle.goal_memory.goal_context_string
-        )
-        if not context_str:
-            return "No active goals set. Use set_active_goal to add one."
-        return context_str
-
-    @llm.function_tool(
-        description="Mark an active goal as completed or failed. "
-                    "This archives the goal to episodic memory for reflection. "
-                    "Use list_active_goals first to get the goal_id."
-    )
-    async def complete_goal(self, goal_id: int, outcome: str = "completed") -> str:
-        success = await asyncio.to_thread(
-            self.memory.lifecycle.goal_memory.complete_goal, goal_id, outcome
-        )
-        if success:
-            return f"Goal {goal_id} marked as '{outcome}' and archived to episodic memory."
-        return f"Goal {goal_id} not found."
-
-    @llm.function_tool(
-        description="Get a performance report for all tools JARVIS has used. "
-                    "Shows success rates, average execution times, and reliability scores. "
-                    "Use this to identify unreliable tools before executing risky tasks."
-    )
-    async def get_tool_performance(self) -> str:
-        return await asyncio.to_thread(
-            self.memory.lifecycle.tool_memory.get_all_tool_report
-        )
-
-    @llm.function_tool(
-        description="Retrieve lessons JARVIS has learned from past failures and experience replay. "
-                    "Optionally filter by topic (e.g., 'selenium', 'google', 'download'). "
-                    "Use this before attempting a task that has previously failed."
-    )
-    async def get_lessons_learned(self, topic: str = "") -> str:
-        try:
-            if topic:
-                with self.memory._lock:
-                    rows = self.memory.dbs["conversations"].execute(
-                        """SELECT lesson, occurrence_count, last_triggered
-                           FROM lessons_learned
-                           WHERE lesson LIKE ? OR source_pattern LIKE ?
-                           ORDER BY importance DESC, last_triggered DESC
-                           LIMIT 5""",
-                        (f"%{topic}%", f"%{topic}%"),
-                    ).fetchall()
-            else:
-                with self.memory._lock:
-                    rows = self.memory.dbs["conversations"].execute(
-                        """SELECT lesson, occurrence_count, last_triggered
-                           FROM lessons_learned
-                           ORDER BY importance DESC, last_triggered DESC
-                           LIMIT 8""",
-                    ).fetchall()
-
-            if not rows:
-                return f"No lessons found{f' for topic: {topic}' if topic else ''}."
-            lines = ["Lessons Learned:"]
-            for lesson, count, last in rows:
-                lines.append(f"\n[seen {count}x, last: {last[:10]}]\n  {lesson[:300]}")
-            return "\n".join(lines)
-        except Exception as e:
-            return f"Error retrieving lessons: {e}"
-
-    @llm.function_tool(
-        description="Get a summary of JARVIS's known capabilities, limitations, and confidence levels. "
-                    "Use this to understand what JARVIS can and cannot do before planning complex tasks."
-    )
-    async def get_agent_self_model(self) -> str:
-        ctx = await asyncio.to_thread(self.memory.lifecycle.get_self_model_context)
-        if not ctx:
-            return "Agent self-model not yet initialized."
-        return ctx
+_init_log = logging.getLogger("JARVIS.Agent")
+
+# ── Eager service initialization ──────────────────────────────────────────────
+# Build all services at module-load time (during 'from agent import server')
+# so that the user's first connection is not blocked by lengthy startup.
+_init_log.info("Eagerly initializing services via ServiceContainer...")
+
+_container = build_container()
+_memory: MemoryManager = _container.get("memory")
+_security = _container.get("security")
+_world_state = _container.get("world_state")
+_verification = _container.get("verification")
+_agent_bus = _container.get("agent_bus")
+_memory_agent = _container.get("memory_agent")
+
+# Register memory to VisionManager
+_container.get("vision_manager").set_memory_manager(_memory)
+
+# Load all skills
+_skill_registry = SkillRegistry(
+    memory=_memory,
+    security=_security,
+    room=None,  # Room injected dynamically per-session
+    verification=_verification,
+)
+_skills_list = _skill_registry.load_skills()
+
+# Build the base tools list
+_tools_base = [
+    SystemTools(security=_security),
+    WindowTools(security=_security),
+    AppTools(security=_security),
+    BrowserTools(security=_security),
+    MediaTools(security=_security),
+    KeyboardTools(security=_security),
+    MouseTools(security=_security),
+    FileTools(security=_security),
+    TaskTools(security=_security),
+    MemoryTools(memory=_memory, security=_security),
+    TaskPlannerTools(memory=_memory),
+    VerificationTools(verification=_verification, security=_security),
+    VisionTools(security=_security),
+] + _skills_list
+
+# Cache services for session reuse
+_cached_services = {"memory": _memory, "tools": _tools_base, "agent_bus": _agent_bus}
+
+# Register tools in the container so TaskTools/VisionTools can look them up
+_container._services["tools"] = _tools_base
+
+# ── MCP server definitions ────────────────────────────────────────────────────
+import sys
+_mcp_cmd = "npx.cmd" if sys.platform == "win32" else "npx"
+
+_search_mcp = MCPServerStdio(command=_mcp_cmd, args=["-y", "duckduckgo-mcp-server"])
+
+_BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY")
+_brave_mcp = (
+    MCPServerStdio(command=_mcp_cmd, args=["-y", "@modelcontextprotocol/server-brave-search"], env={"BRAVE_API_KEY": _BRAVE_API_KEY})
+    if _BRAVE_API_KEY
+    else None
+)
+_FS_MCP_ROOT = os.environ.get("JARVIS_MCP_FS_ROOT", os.path.expanduser("~/jarvis_workspace"))
+os.makedirs(_FS_MCP_ROOT, exist_ok=True)
+_filesystem_mcp = MCPServerStdio(
+    command=_mcp_cmd,
+    args=["-y", "@modelcontextprotocol/server-filesystem", _FS_MCP_ROOT],
+)
+
+_GIT_MCP_REPO = os.environ.get("JARVIS_MCP_GIT_REPO", _FS_MCP_ROOT)
+_git_mcp = (
+    MCPServerStdio(command=_mcp_cmd, args=["-y", "mcp-server-git", "--repository", _GIT_MCP_REPO])
+    if os.path.isdir(os.path.join(_GIT_MCP_REPO, ".git"))
+    else None
+)
+
+_mcp_toolsets = [
+    MCPToolset(id="ddg_search", mcp_server=_search_mcp),
+    MCPToolset(id="filesystem", mcp_server=_filesystem_mcp),
+]
+if _git_mcp:
+    _mcp_toolsets.append(MCPToolset(id="git", mcp_server=_git_mcp))
+if _brave_mcp:
+    _mcp_toolsets.append(MCPToolset(id="brave_search", mcp_server=_brave_mcp))
+
+_init_log.info(
+    f"Eager service init complete. {len(_tools_base)} tools + {len(_mcp_toolsets)} MCP toolsets ready."
+)
+
+# ── Agent definition ──────────────────────────────────────────────────────────
+
+server = AgentServer()
 
 
 class Assistant(Agent):
     def __init__(self, memory: MemoryManager) -> None:
         base_prompt = JarvisBehavior.get_full_system_prompt()
-        
-        # Context is injected fast via lifecycle.build_context or skipped
-        # The prompt remains lightweight at start
-            
         super().__init__(instructions=base_prompt)
 
-server = AgentServer()
-_cached_services = {}
 
 @server.rtc_session(agent_name=os.environ.get("AGENT_NAME", "jarvis"))
 async def my_agent(ctx: agents.JobContext):
-    import time
-    start_t = time.perf_counter()
-    # Initialize long-lived components globally to avoid repeated schema parsing
-    global _cached_services
-    if not _cached_services:
-        memory = MemoryManager()
-        memory.initialize_minimal()
-        security = SecurityManager()
-        world_state = WorldStateManager()
-        verification = VerificationEngine(world_state)
-
-        tools = [
-            SystemTools(security=security),
-            WindowTools(security=security),
-            AppTools(security=security),
-            BrowserTools(security=security),
-            MediaTools(security=security),
-            KeyboardTools(security=security),
-            MouseTools(security=security),
-            FileTools(security=security),
-            TaskTools(security=security),
-            MemoryTools(memory=memory, security=security),
-            TaskPlannerTools(memory=memory),
-            VerificationTools(verification=verification, security=security)
-        ]
-        
-        _cached_services = {
-            "memory": memory,
-            "tools": tools
-        }
-        
+    # Delegate to the newly integrated SupervisorAgent (Phase 6)
+    supervisor_agent = _container.get("supervisor_agent")
+    
+    # We pass the pre-warmed MCP tools and standard tools to the SupervisorAgent
     memory = _cached_services["memory"]
     tools = _cached_services["tools"]
     
-    # Inject active room context into cached tools dynamically
-    for tool in tools:
-        if hasattr(tool, "room"):
-            tool.room = ctx.room
-
-    import time
-    disconnect_count = 0
-    while disconnect_count < 10:
-        session = AgentSession(
-            llm=google.beta.realtime.RealtimeModel(
-                model="models/gemini-2.5-flash-native-audio-preview-12-2025",
-                voice="Charon",
-                temperature=0.3
-            ),
-            tools=tools
-        )
-        try:
-            start_session_t = time.time()
-            await session.start(
-                room=ctx.room,
-                agent=Assistant(memory=memory),
-            )
-            # Normal completion (client disconnected gracefully)
-            memory.log_session_disconnect(time.time() - start_session_t, "graceful_exit")
-            break
-        except Exception as e:
-            disconnect_count += 1
-            duration = time.time() - start_session_t
-            reason = str(e)
-            memory.log_session_disconnect(duration, reason)
-            
-            import logging
-            logger = logging.getLogger("JARVIS.Agent")
-            logger.error(f"Session disconnected due to error: {reason}. Reconnecting (Attempt {disconnect_count})...")
-            
-            await asyncio.sleep(2) # Backoff before reconnecting
-    import logging
-    logging.getLogger("JARVIS.Agent").info(f"Assistant startup completed in {time.perf_counter() - start_t:.3f}s")
-
-    # Start WebRTC stats stream to frontend
-    async def stats_publisher():
-        import json
-        import psutil
-        import logging
-        logger = logging.getLogger("JARVIS.Agent")
-        while ctx.room.isconnected():
-            try:
-                cpu_percent = await asyncio.to_thread(psutil.cpu_percent, 0)
-                simulated_temp = 42.0 + (cpu_percent * 0.43)
-                payload = json.dumps({
-                    "type": "stats",
-                    "cpu": cpu_percent,
-                    "temp": round(simulated_temp, 1)
-                })
-                await ctx.room.local_participant.publish_data(payload.encode('utf-8'), reliable=False)
-            except Exception as e:
-                logger.warning(f"Failed to publish WebRTC stats: {e}")
-            await asyncio.sleep(3)
-
-    asyncio.create_task(stats_publisher())
-
-    # Force JARVIS to speak his intro immediately without waiting for the user
-    try:
-        intro_instruction = """System connection established. Please greet the user proactively using exactly this message:
-Welcome back, Sir.
-J.A.R.V.I.S. successfully online ho gaya hai.
-Saare required systems connect aur ready hain.
-Main aapke instructions ke liye taiyar hoon.
-Batayein Sir, kya karna hai?"""
-        session.history.add_message(role="user", content=intro_instruction)
-        reply_coro = session.generate_reply()
-        if asyncio.iscoroutine(reply_coro):
-            asyncio.create_task(reply_coro)
-    except Exception as e:
-        import logging
-        logging.getLogger("JARVIS.Agent").error(f"Failed to force intro: {e}")
+    await supervisor_agent.run_session(ctx, _mcp_toolsets, tools, memory, _container)
 
 if __name__ == "__main__":
     agents.cli.run_app(server)

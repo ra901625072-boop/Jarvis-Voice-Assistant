@@ -32,16 +32,76 @@ import logging
 from datetime import datetime, date
 from typing import List, Dict, Any, Optional
 
+from modules.core.memory_gate import MemoryGate
+from modules.core.conflict_resolver import ConflictResolver
+from modules.core.experience_replay import ExperienceReplay
+from modules.core.goal_memory import GoalMemory
+from modules.core.tool_memory import ToolMemory
+from modules.core.memory_consolidator import MemoryConsolidator
+from modules.core.reflection_engine import ReflectionEngine
+
 logger = logging.getLogger("JARVIS.MemoryLifecycle")
 
-# Context budget (characters, not tokens — approximation: 1 token ≈ 4 chars)
-_CONTEXT_BUDGET_CHARS = int(os.getenv("JARVIS_CONTEXT_BUDGET", "12000"))
+# Token-based context budget mapping (dynamic detection of token/character environments)
+_raw_budget = int(os.getenv("JARVIS_CONTEXT_BUDGET", "3000"))
+if _raw_budget > 6000:
+    _CONTEXT_BUDGET_TOKENS = _raw_budget // 4
+else:
+    _CONTEXT_BUDGET_TOKENS = _raw_budget
+
+
+# Cache tiktoken encoding at module level to avoid expensive re-import + re-creation on every call
+try:
+    import tiktoken as _tiktoken
+    _TIKTOKEN_ENCODING = _tiktoken.get_encoding("cl100k_base")
+except Exception:
+    _TIKTOKEN_ENCODING = None
+
+
+def _estimate_tokens(text: str) -> int:
+    """Estimate the number of tokens in a text block (approx 1 token = 4 characters)."""
+    if _TIKTOKEN_ENCODING is not None:
+        try:
+            return len(_TIKTOKEN_ENCODING.encode(text))
+        except Exception:
+            pass
+    return max(1, len(text) // 4)
+
+
+def _trim_to_tokens(text: str, max_tokens: int) -> str:
+    """Trim text to fit within max_tokens."""
+    try:
+        import tiktoken
+        encoding = tiktoken.get_encoding("cl100k_base")
+        tokens = encoding.encode(text)
+        if len(tokens) <= max_tokens:
+            return text
+        return encoding.decode(tokens[:max_tokens]) + "\n[...trimmed]"
+    except Exception:
+        char_limit = max_tokens * 4
+        if len(text) <= char_limit:
+            return text
+        return text[:char_limit] + "\n[...trimmed]"
 
 
 class MemoryLifecycle:
     """
-    Orchestrates the full JARVIS memory lifecycle.
-    Instantiated once inside MemoryManager.
+    MemoryLifecycle orchestrates the entire memory system lifecycle, scheduling maintenance pipelines and compiling context budgets.
+
+    SYSTEM PROMPT:
+    Instantiate and use MemoryLifecycle to log new messages, schedule nightly consolidation pipelines, or construct sized context budgets for LLM prompts.
+
+    SHORT DESCRIPTION:
+    Orchestrates the entire memory process lifecycle from gating and contradiction resolution to consolidations, experience replays, and context budgets.
+
+    PROCESS:
+    1. On new messages, runs gating check, contradiction checks, and commits to DB.
+    2. Runs nightly maintenance (consolidations, daily reflection, experience replayer, merge checks, auto goal checks).
+    3. Builds sized context strings matching token budget priorities: goals > preferences > reminders > ranked memories > knowledge graphs > lessons > reflections.
+    4. Manages agent self-model capabilities references.
+
+    FLOW:
+    Caller -> on_new_message() / run_nightly() / build_context() -> memory subsystems -> consolidator / replayer / SQLite DB tables -> Caller
     """
 
     def __init__(self, memory_manager):
@@ -49,51 +109,12 @@ class MemoryLifecycle:
         self._dbs  = memory_manager.dbs
         self._lock = memory_manager._lock
 
-        # Lazy-load subsystems to avoid circular imports at module load time
-        self._gate      = None
-        self._resolver  = None
-        self._replayer  = None
-        self._goal_mem  = None
-        self._tool_mem  = None
-
-    # ------------------------------------------------------------------ #
-    # Subsystem accessors (lazy-init)                                      #
-    # ------------------------------------------------------------------ #
-
-    @property
-    def gate(self):
-        if self._gate is None:
-            from modules.core.memory_gate import MemoryGate
-            self._gate = MemoryGate()
-        return self._gate
-
-    @property
-    def resolver(self):
-        if self._resolver is None:
-            from modules.core.conflict_resolver import ConflictResolver
-            self._resolver = ConflictResolver(self.mm)
-        return self._resolver
-
-    @property
-    def replayer(self):
-        if self._replayer is None:
-            from modules.core.experience_replay import ExperienceReplay
-            self._replayer = ExperienceReplay(self.mm)
-        return self._replayer
-
-    @property
-    def goal_memory(self):
-        if self._goal_mem is None:
-            from modules.core.goal_memory import GoalMemory
-            self._goal_mem = GoalMemory(self.mm)
-        return self._goal_mem
-
-    @property
-    def tool_memory(self):
-        if self._tool_mem is None:
-            from modules.core.tool_memory import ToolMemory
-            self._tool_mem = ToolMemory(self.mm)
-        return self._tool_mem
+        # Subsystems initialized directly at load time (no lazy load)
+        self.gate         = MemoryGate()
+        self.resolver     = ConflictResolver(self.mm)
+        self.replayer     = ExperienceReplay(self.mm)
+        self.goal_memory  = GoalMemory(self.mm)
+        self.tool_memory  = ToolMemory(self.mm)
 
     # ------------------------------------------------------------------ #
     # Real-time path: on_new_message                                       #
@@ -173,14 +194,12 @@ class MemoryLifecycle:
 
         try:
             # 1. Consolidate
-            from modules.core.memory_consolidator import MemoryConsolidator
             MemoryConsolidator(self.mm).run()
         except Exception as e:
             logger.error(f"Consolidation failed: {e}")
 
         try:
             # 2. Daily reflection
-            from modules.core.reflection_engine import ReflectionEngine
             engine = ReflectionEngine(self.mm)
             engine.run_daily()
         except Exception as e:
@@ -209,7 +228,6 @@ class MemoryLifecycle:
         try:
             # 6. Weekly reflection (Sundays)
             if date.today().weekday() == 6:
-                from modules.core.reflection_engine import ReflectionEngine
                 ReflectionEngine(self.mm).run_weekly()
         except Exception as e:
             logger.error(f"Weekly reflection failed: {e}")
@@ -217,7 +235,6 @@ class MemoryLifecycle:
         try:
             # 7. Monthly reflection (1st of month)
             if date.today().day == 1:
-                from modules.core.reflection_engine import ReflectionEngine
                 ReflectionEngine(self.mm).run_monthly()
         except Exception as e:
             logger.error(f"Monthly reflection failed: {e}")
@@ -250,7 +267,7 @@ class MemoryLifecycle:
     def build_context(
         self,
         current_query: Optional[str] = None,
-        budget: int = _CONTEXT_BUDGET_CHARS,
+        budget: Optional[int] = None,
     ) -> str:
         """
         Build a context string for the LLM that fits within the token budget.
@@ -265,8 +282,15 @@ class MemoryLifecycle:
         7. Agent reflections (recent)
         8. Conversation summaries
         """
+        if budget is None:
+            token_budget = _CONTEXT_BUDGET_TOKENS
+        elif budget > 6000:
+            token_budget = budget // 4
+        else:
+            token_budget = budget
+
         # FAST PATH: if no query and no preferences exist, return empty quickly
-        prefs = self.mm.get_all_preferences()
+        prefs = self.mm.get_all_preferences()  # Cache result — used again below
         goals_str = self.goal_memory.goal_context_string()
         if not current_query and not prefs and not goals_str:
             return ""
@@ -277,8 +301,7 @@ class MemoryLifecycle:
         if goals_str:
             sections.append({"priority": 10, "text": goals_str})
 
-        # 2. User preferences
-        prefs = self.mm.get_all_preferences()
+        # 2. User preferences (reuse already-fetched prefs — no second DB call)
         if prefs:
             pref_str = "--- USER PREFERENCES ---\n" + "\n".join(
                 f"- {k}: {v}" for k, v in prefs.items()
@@ -345,21 +368,22 @@ class MemoryLifecycle:
             sum_str = "--- RECENT SUMMARIES ---\n" + "\n".join(r[0][:200] for r in sum_rows)
             sections.append({"priority": 3, "text": sum_str})
 
-        # Sort by priority and apply budget
+        # Sort by priority and apply token budget
         sections.sort(key=lambda s: s["priority"], reverse=True)
         result_parts = []
-        used = 0
+        used_tokens = 0
 
         for section in sections:
             text = section["text"]
-            if used + len(text) <= budget:
+            section_tokens = _estimate_tokens(text)
+            if used_tokens + section_tokens <= token_budget:
                 result_parts.append(text)
-                used += len(text)
+                used_tokens += section_tokens
             else:
-                # Trim to remaining budget
-                remaining = budget - used
-                if remaining > 100:
-                    result_parts.append(text[:remaining] + "\n[...trimmed]")
+                remaining_tokens = token_budget - used_tokens
+                if remaining_tokens > 25:
+                    trimmed_text = _trim_to_tokens(text, remaining_tokens)
+                    result_parts.append(trimmed_text)
                 break
 
         return "\n\n".join(result_parts)

@@ -4,8 +4,33 @@ logger = logging.getLogger("JARVIS.Behavior")
 
 class JarvisBehavior:
     """
-    Core configuration for JARVIS's personality, behavior, and operational parameters.
+    JarvisBehavior configures personality rules, system prompts, safety, and voice styles.
+
+    SYSTEM PROMPT:
+    Load JarvisBehavior to get the structured system-level prompt guidelines. Maintain the Hinglish voice instructions during verbal interactions.
+
+    SHORT DESCRIPTION:
+    Defines core identity parameters, safety limitations, voice templates, and tool guidelines for the Jarvis LLM.
+
+    PROCESS:
+    1. Consolidates separate operational prompts (Identity/System, Tool execution rules, Memory retrieval preferences, voice formatting, and Safety guidelines) into a single system instruction.
+    2. Caches generated string buffers to optimize initialization and token overhead.
+
+    FLOW:
+    Assistant initialization -> get_full_system_prompt() -> concatenates prompts -> returns instructions to LLM -> Caller
     """
+
+    # ── Greeting message ──────────────────────────────────────────────────────
+    # Single source of truth for the Hinglish startup greeting.
+    # Referenced in agent.py's session handler instead of being hardcoded there.
+    INTRO_MESSAGE = (
+        "System connection established. Please greet the user proactively using exactly this message:\n"
+        "Welcome back, Sir.\n"
+        "J.A.R.V.I.S. successfully online ho gaya hai.\n"
+        "Saare required systems connect aur ready hain.\n"
+        "Main aapke instructions ke liye taiyar hoon.\n"
+        "Batayein Sir, kya karna hai?"
+    )
 
     SYSTEM_PROMPT = """You are J.A.R.V.I.S. (Just A Rather Very Intelligent System).
 An advanced operating-system assistant deeply integrated into the user's local Windows PC.
@@ -17,6 +42,13 @@ CORE PRINCIPLES:
 4. Prioritize user commands over personality.
 5. Ask for confirmation before destructive actions (delete, shutdown).
 6. Always prefer safe system operation.
+
+WAKE WORD ACTIVATION & NOISE:
+- You are activated when the user says "Jarvis". The mic enables only when they say "Jarvis".
+- IMPORTANT: If you hear background music, songs, lyrics, or ambient noise, IGNORE IT completely. Only respond to the user's direct voice commands directed at you.
+- After you complete a task or respond, the mic will automatically mute after a few seconds of silence.
+- Do NOT prompt the user to say something or ask "what else can I help with?" — they will say "Jarvis" again when they need you.
+- Keep your responses concise and action-oriented. When done, simply stop speaking.
 
 When you are first connected, you MUST proactively greet the user with exactly this message:
 Welcome back, Sir.
@@ -60,6 +92,12 @@ SAFETY RULES:
 - Forbidden: Modifying Registry, disabling security.
 """
 
+    SEARCH_PROMPT = """
+SEARCH RULES:
+- If the user says "tell me" (e.g., "google search and tell me winner of ipl 2026 winner"), use `search_google_live` to retrieve the facts and then speak/write ONLY the final answer to the user.
+- If the user says "show me" (e.g., "google search and show me winner of ipl 2026 winner"), use `search_google` to navigate the active browser page to the search results page to physically show the user, and speak/write ONLY that you have opened the page.
+"""
+
     # We removed the verbose VISION, SEARCH, and CAPABILITIES prompts because the tool descriptions
     # themselves provide this information, saving thousands of tokens.
     
@@ -79,7 +117,8 @@ SAFETY RULES:
             f"{cls.TOOL_PROMPT}\n"
             f"{cls.MEMORY_PROMPT}\n"
             f"{cls.VOICE_PROMPT}\n"
-            f"{cls.SAFETY_PROMPT}"
+            f"{cls.SAFETY_PROMPT}\n"
+            f"{cls.SEARCH_PROMPT}"
         )
 
         cls._cached_prompt = prompt

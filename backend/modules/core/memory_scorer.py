@@ -88,7 +88,22 @@ _PROJECT_PATTERNS: List[Tuple[str, List[str]]] = [
 
 class MemoryScorer:
     """
-    Rule-based memory classifier.  No LLM required — deterministic and fast.
+    MemoryScorer classifies and scores memory entries for relevance, type, and categorization.
+
+    SYSTEM PROMPT:
+    Query MemoryScorer to evaluate incoming text blocks, calculating importance weights (1-10) and tagging categories before storage.
+
+    SHORT DESCRIPTION:
+    Deterministic, rule-based text classifier that assigns importance, tags, and memory types without relying on LLM inferences.
+
+    PROCESS:
+    1. Evaluates string text for noise patterns and critical keywords (e.g. API keys, credentials) to compute numerical importance scores.
+    2. Identifies memory type (semantic, episodic, procedural, working) by checking tense and adverb signals.
+    3. Searches for domain-specific technology keywords to produce categorizing tag lists.
+    4. Matches content patterns to project namespaces (e.g. jarvis, nova).
+
+    FLOW:
+    Caller -> score() / classify_type() / extract_tags() / analyze() -> regex matches -> classification dict -> Caller
     """
 
     # ------------------------------------------------------------------

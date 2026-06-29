@@ -37,8 +37,22 @@ _TOOL_FAILURE_THRESHOLD = 0.40
 
 class ExperienceReplay:
     """
-    Extracts lessons from repeated failures and stores them as
-    permanent procedural memories.
+    ExperienceReplay extracts permanent procedural lessons from recurring tool, episodic, or workflow failures.
+
+    SYSTEM PROMPT:
+    Trigger ExperienceReplay to scan, cluster, and learn from past failure logs, converting mistakes into permanent procedural skills.
+
+    SHORT DESCRIPTION:
+    Aggregates execution failures (episodes, workflows, tools) to extract actionable lessons and save them to procedural memory databases.
+
+    PROCESS:
+    1. Scans episodic memories for error-related text logs (last 30 days).
+    2. Clusters similar failures based on regex keywords (e.g. CAPTCHA, timeouts, permissions).
+    3. Triggers workflow statistics and tool stats evaluations to find repeat offenders.
+    4. Writes lessons to SQLite databases and promotes them to procedural memory slots immune to memory decay.
+
+    FLOW:
+    Scheduler/Caller -> run() -> scans failures -> clusters error patterns -> saves to lessons_learned & procedural_memories -> Caller
     """
 
     def __init__(self, memory_manager):
