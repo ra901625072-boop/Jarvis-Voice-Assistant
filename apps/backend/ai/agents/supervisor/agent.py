@@ -6,7 +6,7 @@ import json
 import psutil
 from typing import Dict, Any
 
-from livekit import ai.agents
+from livekit import agents
 from livekit.agents import llm
 import google.genai
 from google.genai import types
