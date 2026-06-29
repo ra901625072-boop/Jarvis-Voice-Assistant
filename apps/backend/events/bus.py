@@ -1,8 +1,8 @@
 import asyncio
 import logging
 from typing import Callable, Dict, Optional, Awaitable
-from agents.types import AgentTask, AgentResult
-from config import AGENT_TIMEOUTS
+from ai.agents.types import AgentTask, AgentResult
+from config.settings import AGENT_TIMEOUTS
 
 logger = logging.getLogger("JARVIS.AgentBus")
 

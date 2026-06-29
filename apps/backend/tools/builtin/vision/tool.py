@@ -15,7 +15,7 @@ import os
 import threading
 import time
 from livekit.agents import llm
-from toolsets.base import JarvisToolset
+from tools.builtin.base import JarvisToolset
 from modules.core.security_manager import SecurityManager
 
 _logger = logging.getLogger("JARVIS.VisionTools")
@@ -116,7 +116,7 @@ class VisionTools(JarvisToolset):
             except Exception as e:
                 _logger.warning(f"Failed to publish screen analysis status payload: {e}")
 
-        from agents.types import AgentTask
+        from ai.agents.types import AgentTask
         import uuid
         
         task = AgentTask(

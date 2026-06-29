@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from api.middleware.auth import get_current_user, require_role
-from services.notification_service import NotificationService
+from integrations.communication.notification_service import NotificationService
 import os
 import json
 import logging

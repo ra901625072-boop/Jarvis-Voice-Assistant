@@ -2,8 +2,8 @@ import logging
 import json
 from typing import List, Dict, Any, Optional
 
-from agents.base_agent import BaseAgent
-from agents.types import AgentTask, AgentResult
+from ai.agents.base_agent import BaseAgent
+from ai.agents.types import AgentTask, AgentResult
 from modules.execution.world_state import WorldStateManager
 from modules.execution.recovery_engine import RecoveryEngine
 from modules.execution.success_patterns import SuccessLearner

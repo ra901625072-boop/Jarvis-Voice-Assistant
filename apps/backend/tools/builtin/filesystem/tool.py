@@ -7,7 +7,7 @@ Phase 2.1: All path-safety checks route through SecurityManager.is_safe_path().
 import asyncio
 import os
 from livekit.agents import llm
-from toolsets.base import JarvisToolset
+from tools.builtin.base import JarvisToolset
 from modules.core.security_manager import SecurityManager
 
 

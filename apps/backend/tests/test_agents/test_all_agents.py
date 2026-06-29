@@ -1,18 +1,18 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from agents.types import AgentTask
-from agents.browser_agent import BrowserAgent
-from agents.coding_agent import CodingAgent
-from agents.debugging_agent import DebuggingAgent
-from agents.execution_agent import ExecutionAgent
-from agents.integration_agent import IntegrationAgent
-from agents.memory_agent import MemoryAgent
-from agents.planning_agent import PlanningAgent
-from agents.recovery_agent import RecoveryAgent
-from agents.supervisor_agent import SupervisorAgent
-from agents.verification_agent import VerificationAgent
-from agents.vision_agent import VisionAgent
-from agents.coordinator_agent import CoordinatorAgent
+from ai.agents.types import AgentTask
+from ai.agents.browser.agent import BrowserAgent
+from ai.agents.coding.agent import CodingAgent
+from ai.agents.debugging.agent import DebuggingAgent
+from ai.agents.execution.agent import ExecutionAgent
+from ai.agents.integration.agent import IntegrationAgent
+from ai.agents.memory.agent import MemoryAgent
+from ai.agents.planning.agent import PlanningAgent
+from ai.agents.recovery.agent import RecoveryAgent
+from ai.agents.supervisor.agent import SupervisorAgent
+from ai.agents.verification.agent import VerificationAgent
+from ai.agents.vision.agent import VisionAgent
+from ai.agents.coordinator.agent import CoordinatorAgent
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("agent_class,agent_id", [

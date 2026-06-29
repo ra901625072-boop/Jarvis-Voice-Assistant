@@ -1,6 +1,6 @@
 """toolsets/keyboard_tools.py — KeyboardTools toolset."""
 from livekit.agents import llm
-from toolsets.base import JarvisToolset
+from tools.builtin.base import JarvisToolset
 from modules.controls.keyboard_controller import KeyboardController
 from modules.core.security_manager import SecurityManager
 

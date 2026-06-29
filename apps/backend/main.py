@@ -102,7 +102,7 @@ def main() -> None:
 
     startup_start = time.perf_counter()
 
-    from config import load_config
+    from config.settings import load_config
     load_config()
 
     # Environment validation

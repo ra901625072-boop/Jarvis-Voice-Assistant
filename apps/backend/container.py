@@ -138,7 +138,7 @@ def build_container() -> ServiceContainer:
     import os
 
     # Phase 0: Foundations
-    from agents.bus import AgentBus
+    from events.bus import AgentBus
 
     container = ServiceContainer()
 
@@ -334,12 +334,12 @@ def _make_memory():
 
 
 def _make_memory_agent(memory, bus):
-    from agents.memory_agent import MemoryAgent
+    from ai.agents.memory.agent import MemoryAgent
     return MemoryAgent(memory=memory, bus=bus)
 
 
 def _make_planning_agent(memory_agent, bus):
-    from agents.planning_agent import PlanningAgent
+    from ai.agents.planning.agent import PlanningAgent
     return PlanningAgent(memory_agent=memory_agent, bus=bus)
 
 
@@ -359,43 +359,43 @@ def _make_action_verifier(observer):
 
 
 def _make_execution_agent(tools_list, memory_agent, bus, security):
-    from agents.execution_agent import ExecutionAgent
+    from ai.agents.execution.agent import ExecutionAgent
     return ExecutionAgent(tools_list=tools_list, memory_agent=memory_agent, bus=bus, security=security)
 
 def _make_supervisor_agent(bus):
-    from agents.supervisor_agent import SupervisorAgent
+    from ai.agents.supervisor.agent import SupervisorAgent
     return SupervisorAgent(bus=bus)
 
 def _make_coding_agent(bus, tools_list):
-    from agents.coding_agent import CodingAgent
+    from ai.agents.coding.agent import CodingAgent
     return CodingAgent(bus=bus, tools_list=tools_list)
 
 def _make_debugging_agent(bus):
-    from agents.debugging_agent import DebuggingAgent
+    from ai.agents.debugging.agent import DebuggingAgent
     return DebuggingAgent(bus=bus)
 
 def _make_browser_agent(bus, tools_list):
-    from agents.browser_agent import BrowserAgent
+    from ai.agents.browser.agent import BrowserAgent
     return BrowserAgent(bus=bus, tools_list=tools_list)
 
 def _make_verification_agent(bus):
-    from agents.verification_agent import VerificationAgent
+    from ai.agents.verification.agent import VerificationAgent
     return VerificationAgent(bus=bus)
 
 def _make_recovery_agent(bus):
-    from agents.recovery_agent import RecoveryAgent
+    from ai.agents.recovery.agent import RecoveryAgent
     return RecoveryAgent(bus=bus)
 
 def _make_integration_agent(bus):
-    from agents.integration_agent import IntegrationAgent
+    from ai.agents.integration.agent import IntegrationAgent
     return IntegrationAgent(bus=bus)
 
 def _make_vision_agent(vision_manager, bus):
-    from agents.vision_agent import VisionAgent
+    from ai.agents.vision.agent import VisionAgent
     return VisionAgent(vision_manager=vision_manager, bus=bus)
 
 def _make_coordinator_agent(bus, memory_manager):
-    from agents.coordinator_agent import CoordinatorAgent
+    from ai.agents.coordinator.agent import CoordinatorAgent
     return CoordinatorAgent(
         bus=bus, 
         available_agents=[

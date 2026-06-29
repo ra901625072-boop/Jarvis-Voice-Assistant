@@ -7,7 +7,7 @@ consolidated here from the old VisionTools to fix the misplaced ownership issue
 """
 import asyncio
 from livekit.agents import llm
-from toolsets.base import JarvisToolset
+from tools.builtin.base import JarvisToolset
 from modules.core.memory_manager import MemoryManager
 from modules.core.security_manager import SecurityManager
 

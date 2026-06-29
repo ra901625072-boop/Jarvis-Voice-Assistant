@@ -1,6 +1,6 @@
 """toolsets/mouse_tools.py — MouseTools toolset."""
 from livekit.agents import llm
-from toolsets.base import JarvisToolset
+from tools.builtin.base import JarvisToolset
 from modules.controls.mouse_controller import MouseController
 from modules.core.security_manager import SecurityManager
 

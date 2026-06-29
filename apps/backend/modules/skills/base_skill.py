@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any, List
 from google import genai
 from google.genai import types
 from livekit.agents import llm
-from toolsets.base import JarvisToolset
+from tools.builtin.base import JarvisToolset
 
 # ── Module-level shared singletons ──────────────────────────────────────────
 # Instantiated once at module load; all skill classes share the same object.

@@ -1,7 +1,7 @@
 import pytest
 import asyncio
-from agents.types import AgentTask, AgentResult, TaskPriority
-from agents.bus import AgentBus
+from ai.agents.types import AgentTask, AgentResult, TaskPriority
+from events.bus import AgentBus
 
 @pytest.fixture
 def bus():

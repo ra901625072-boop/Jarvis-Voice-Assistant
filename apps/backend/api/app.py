@@ -14,8 +14,8 @@ logger = logging.getLogger("JARVIS.API.App")
 def create_fastapi_app() -> FastAPI:
     # Initialize SQLAlchemy database tables
     try:
-        from db.database import engine, Base
-        import db.models # Register models
+        from domain.repositories.database import engine, Base
+        import domain.entities.models # Register models
         Base.metadata.create_all(bind=engine)
         logger.info("SQLAlchemy database tables initialized successfully.")
     except Exception as e:

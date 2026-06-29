@@ -1,7 +1,7 @@
 import logging
 from typing import Optional
-from agents.base_agent import BaseAgent
-from agents.types import AgentTask, AgentResult
+from ai.agents.base_agent import BaseAgent
+from ai.agents.types import AgentTask, AgentResult
 
 logger = logging.getLogger("JARVIS.MemoryAgent")
 

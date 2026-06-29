@@ -1,7 +1,7 @@
 """toolsets/verification_tools.py — VerificationTools toolset."""
 import asyncio
 from livekit.agents import llm
-from toolsets.base import JarvisToolset
+from tools.builtin.base import JarvisToolset
 from modules.execution.verification_engine import VerificationEngine
 from modules.core.security_manager import SecurityManager
 

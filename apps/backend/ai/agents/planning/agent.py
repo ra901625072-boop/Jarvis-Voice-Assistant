@@ -1,8 +1,8 @@
 import logging
 import json
 from typing import Optional, List, Dict, Any
-from agents.base_agent import BaseAgent
-from agents.types import AgentTask, AgentResult
+from ai.agents.base_agent import BaseAgent
+from ai.agents.types import AgentTask, AgentResult
 from modules.planning.task_planner import TaskPlannerTools
 from modules.core.state_manager import SubTask
 from modules.planning.dag_compiler import DAGCompiler

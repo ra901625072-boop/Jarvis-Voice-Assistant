@@ -14,10 +14,10 @@ import os
 import asyncio
 import logging
 
-from config import load_config
+from config.settings import load_config
 load_config()
 
-from livekit import agents
+from livekit import ai.agents
 from livekit.agents import AgentServer, AgentSession, Agent, llm
 from livekit.agents.llm.mcp import MCPServerStdio, MCPToolset
 from livekit.plugins import google
@@ -29,7 +29,7 @@ from modules.planning.task_planner import TaskPlannerTools
 from modules.skills.registry import SkillRegistry
 
 # ── Import all toolsets from the new package ──────────────────────────────────
-from toolsets import (
+from tools.builtin import (
     SystemTools,
     WindowTools,
     AppTools,

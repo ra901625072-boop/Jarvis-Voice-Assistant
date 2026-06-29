@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from agents.coding_agent import CodingAgent
-from agents.types import AgentTask
+from ai.agents.coding.agent import CodingAgent
+from ai.agents.types import AgentTask
 
 @pytest.mark.asyncio
 async def test_write_code_success():

@@ -1,8 +1,8 @@
 import logging
 import asyncio
 from typing import Dict, Any, List
-from agents.base_agent import BaseAgent
-from agents.types import AgentTask, AgentResult
+from ai.agents.base_agent import BaseAgent
+from ai.agents.types import AgentTask, AgentResult
 
 from modules.execution.world_state import WorldStateManager
 from modules.execution.execution_engine import ExecutionEngine

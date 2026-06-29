@@ -1,6 +1,6 @@
 """toolsets/window_tools.py — WindowTools toolset."""
 from livekit.agents import llm
-from toolsets.base import JarvisToolset
+from tools.builtin.base import JarvisToolset
 from modules.controls.window_controller import WindowController
 from modules.core.security_manager import SecurityManager
 
