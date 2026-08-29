@@ -2,7 +2,7 @@
 from livekit.agents import llm
 from tools.builtin.base import JarvisToolset
 from modules.controls.window_controller import WindowController
-from modules.core.security_manager import SecurityManager
+from modules.security.manager import SecurityManager
 
 
 class WindowTools(JarvisToolset):

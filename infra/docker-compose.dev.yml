@@ -1,0 +1,8 @@
+# Development overrides — use with: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+services:
+  backend:
+    volumes:
+      - ../apps/backend:/app/backend
+      - ../apps/frontend:/app/frontend
+    environment:
+      - JARVIS_DEBUG=true

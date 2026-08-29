@@ -12,7 +12,7 @@ class OpenRouterVisionClient:
         self.api_key = os.getenv("OPENROUTER_API_KEY")
         self.api_url = "https://openrouter.ai/api/v1/chat/completions"
 
-    def analyze_image(self, base64_image: str, prompt: str, model: str = "qwen/qwen2.5-vl-72b-instruct:free") -> str:
+    def analyze_image(self, base64_image: str, prompt: str, model: str = "qwen/qwen2.5-vl-72b-instruct", max_tokens: int = 1024) -> str:
         api_key = self.api_key or os.getenv("OPENROUTER_API_KEY")
         if not api_key:
             return "Error: OPENROUTER_API_KEY is not configured in environment."
@@ -39,14 +39,17 @@ class OpenRouterVisionClient:
             }
         ]
 
+        target_tokens = min(max_tokens, 250)
         payload = {
             "model": model,
             "messages": messages,
-            "temperature": 0.2
+            "temperature": 0.2,
+            "max_tokens": target_tokens
         }
 
+
         try:
-            logger.info(f"Sending image query to OpenRouter using model {model}...")
+            logger.info(f"Sending image query to OpenRouter using model {model} (max_tokens={target_tokens})...")
             response = requests.post(self.api_url, headers=headers, json=payload, timeout=15)
             if response.status_code == 200:
                 data = response.json()
@@ -56,9 +59,12 @@ class OpenRouterVisionClient:
                     logger.info("Successfully received analysis from OpenRouter.")
                     return content
                 return "Error: Empty response structure from OpenRouter."
+            elif response.status_code in (402, 429):
+                logger.warning(f"OpenRouter Vision credit limit/exhausted (HTTP {response.status_code}). Falling back to Gemini Vision immediately.")
+                return f"Error: OpenRouter API returned status code {response.status_code}."
             else:
                 logger.error(f"OpenRouter Error status {response.status_code}: {response.text}")
                 return f"Error: OpenRouter API returned status code {response.status_code}."
         except Exception as e:
-            logger.error(f"Failed to query OpenRouter Vision API: {e}")
+            logger.warning(f"Failed to query OpenRouter Vision API: {e}")
             return f"Error: Exception occurred during OpenRouter query: {str(e)}"

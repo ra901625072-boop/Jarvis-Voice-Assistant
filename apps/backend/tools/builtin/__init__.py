@@ -17,6 +17,10 @@ from tools.builtin.filesystem.tool import FileTools
 from tools.builtin.task.tool import TaskTools
 from tools.builtin.memory.tool import MemoryTools
 from tools.builtin.vision.tool import VisionTools
+from tools.builtin.translation.tool import TranslationTools
+from tools.builtin.language.tool import LanguageTools
+from tools.builtin.notification.tool import NotificationTools
+from tools.builtin.social.tool import SocialMediaTools
 
 __all__ = [
     "JarvisToolset",
@@ -33,4 +37,10 @@ __all__ = [
     "TaskTools",
     "MemoryTools",
     "VisionTools",
+    "TranslationTools",
+    "LanguageTools",
+    "NotificationTools",
+    "SocialMediaTools",
 ]
+
+

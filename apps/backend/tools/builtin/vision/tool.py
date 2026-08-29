@@ -8,7 +8,6 @@ Phase 5.4: ScreenObserver is event-driven — started on first vision query,
 auto-stopped after 30 seconds of no vision tool calls. Feature-flagged behind
 JARVIS_LAZY_VISION=true (default true since skills.md recommends it).
 """
-import asyncio
 import json
 import logging
 import os
@@ -16,13 +15,13 @@ import threading
 import time
 from livekit.agents import llm
 from tools.builtin.base import JarvisToolset
-from modules.core.security_manager import SecurityManager
+from modules.security.manager import SecurityManager
 
 _logger = logging.getLogger("JARVIS.VisionTools")
 
 # Use lazy ScreenObserver by default (feature flag)
 _LAZY_VISION = os.environ.get("JARVIS_LAZY_VISION", "true").lower() != "false"
-_IDLE_TIMEOUT = 30  # seconds before auto-stopping the observer
+_IDLE_TIMEOUT = 15  # seconds before auto-stopping the observer
 
 
 class VisionTools(JarvisToolset):
@@ -43,11 +42,11 @@ class VisionTools(JarvisToolset):
 
     @property
     def agent_bus(self):
-        from container import ServiceContainer
-        container = ServiceContainer.instance()
-        if container:
-            return container.get("agent_bus")
-        return None
+        if not hasattr(self, '_agent_bus_cached'):
+            from container import ServiceContainer
+            container = ServiceContainer.instance()
+            self._agent_bus_cached = container.get("agent_bus") if container else None
+        return self._agent_bus_cached
 
     def _start_observer(self) -> None:
         """Start the ScreenObserver if not already running."""
@@ -84,9 +83,9 @@ class VisionTools(JarvisToolset):
     @llm.function_tool(
         description=(
             "Captures the screen or active window on-demand and analyzes it to answer queries. "
-            "Use this ONLY when the user asks questions about their screen contents, "
+            "Use this when the user asks questions about their screen contents, "
             "terminal errors, code tracebacks, visual layouts, open application details, "
-            "or buttons to click. Never call this continuously or in a loop."
+            "or buttons to click."
         )
     )
     async def analyze_screen_on_demand(self, query: str) -> str:
@@ -133,3 +132,38 @@ class VisionTools(JarvisToolset):
         if result.success:
             return result.result.get("analysis", "Error: No analysis returned from Vision Agent.")
         return f"Error: {result.error}"
+
+    @llm.function_tool(
+        description=(
+            "Captures the screen and overlays numeric bounding-box marks (Set-of-Marks Grounding) "
+            "on interactive UI elements to accurately locate buttons, inputs, and clickable icons."
+        )
+    )
+    async def analyze_screen_with_som(self, query: str) -> str:
+        bus = self.agent_bus
+        if bus is None:
+            return "Error: AgentBus is not available."
+
+        _logger.info(f"LLM Agent triggered analyze_screen_with_som for query: '{query}'")
+
+        if _LAZY_VISION:
+            self._start_observer()
+        self._last_vision_call = time.monotonic()
+        self._schedule_idle_stop()
+
+        from ai.agents.types import AgentTask
+        import uuid
+
+        task = AgentTask(
+            task_id=str(uuid.uuid4()),
+            task_type="analyze_screen",
+            payload={"query": query, "use_som_grounding": True},
+            origin_agent="supervisor",
+            target_agent="vision_agent"
+        )
+
+        result = await bus.dispatch(task)
+        if result.success:
+            return result.result.get("analysis", "Error: No analysis returned from Vision Agent.")
+        return f"Error: {result.error}"
+

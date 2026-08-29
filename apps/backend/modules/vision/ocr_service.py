@@ -26,11 +26,22 @@ class OCRService:
         except Exception as e:
             logger.error(f"winocr warmup failed: {e}")
 
-    def extract_text(self, image: Image.Image) -> str:
+    def extract_text(self, image: Image.Image, languages: list[str] = None) -> str:
         """
-        Extracts text from a PIL Image using the native Windows OCR engine.
-        Returns the merged text string.
+        Extracts text from a PIL Image. If languages parameter is set to non-English languages,
+        delegates to IndicOCRService to route accordingly. Otherwise uses fast native Windows OCR.
         """
+        if languages and any(lang in languages for lang in ["hi", "gu"]):
+            try:
+                from container import ServiceContainer
+                container = ServiceContainer.instance()
+                if container:
+                    indic_ocr = container.get_or_none("indic_ocr_service")
+                    if indic_ocr:
+                        return indic_ocr.extract_text(image, languages)
+            except Exception as e:
+                logger.error(f"Delegation to IndicOCRService failed: {e}")
+
         try:
             import winocr
             # Convert image to RGB format if not already
@@ -44,3 +55,4 @@ class OCRService:
         except Exception as e:
             logger.error(f"winocr text extraction failed: {e}")
             return f"Error running native Windows OCR: {str(e)}"
+

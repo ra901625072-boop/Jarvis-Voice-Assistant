@@ -1,0 +1,318 @@
+/* ==========================================================================
+   JARVIS MULTI-AGENT CONTROL CENTER - LAYOUT & NAVIGATION
+   ========================================================================== */
+
+/* Overall App Workspace Grid */
+#dashboard-screen {
+  display: flex;
+  height: 100vh;
+  padding: 12px;
+  gap: 12px;
+  background: transparent;
+}
+
+/* Sidebar Navigation Drawer */
+.sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 14px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--c-border-subtle);
+}
+
+.brand-small {
+  width: 34px;
+  height: 34px;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--c-primary);
+  box-shadow: 0 0 16px rgba(59, 130, 246, 0.15);
+}
+
+.brand-small svg {
+  width: 18px;
+  height: 18px;
+}
+
+.logo-text {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--c-text);
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--c-text-muted);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  text-align: left;
+  position: relative;
+}
+
+.nav-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--c-text);
+  border-color: rgba(255, 255, 255, 0.06);
+}
+
+.nav-item.active {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: rgba(59, 130, 246, 0.25);
+  color: #60A5FA;
+  font-weight: 600;
+}
+
+.nav-item.active svg {
+  color: #60A5FA;
+}
+
+.nav-item svg {
+  width: 17px;
+  height: 17px;
+  transition: color var(--transition-fast);
+  opacity: 0.85;
+}
+
+.nav-item .badge {
+  position: absolute;
+  right: 12px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--c-text);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 10px;
+  min-width: 18px;
+  text-align: center;
+}
+
+.nav-item .badge.alarm-badge {
+  background: rgba(245, 158, 11, 0.2);
+  color: #FBBF24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 16px;
+  border-top: 1px solid var(--c-border-subtle);
+}
+
+.btn-logout {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px;
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px solid rgba(239, 68, 68, 0.15);
+  border-radius: 8px;
+  color: #F87171;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-logout:hover {
+  background: rgba(239, 68, 68, 0.18);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #FFF;
+}
+
+.btn-logout svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* Main Canvas Display Area */
+.main-display {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+}
+
+/* Top Header Command Bar */
+.top-bar {
+  height: 56px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 18px;
+  flex-shrink: 0;
+  border-radius: 12px;
+}
+
+.page-title-area .sub-nav-indicator {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  color: var(--c-primary);
+  display: block;
+  margin-bottom: 2px;
+  text-transform: uppercase;
+}
+
+.page-title-area h2 {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--c-text);
+}
+
+.header-operations {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Command Palette Trigger Button */
+.btn-command-palette-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  color: var(--c-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-command-palette-trigger:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.15);
+  color: var(--c-text);
+}
+
+.btn-command-palette-trigger .icon-search {
+  width: 14px;
+  height: 14px;
+  opacity: 0.7;
+}
+
+/* Header Mini Status Pills */
+.mini-status-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--c-border-subtle);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.mini-status-pill .label {
+  color: var(--c-text-dim);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+}
+
+.mini-status-pill .value {
+  color: var(--c-primary);
+  font-weight: 600;
+}
+
+.mini-status-pill .value.danger {
+  color: #F59E0B;
+}
+
+/* WebRTC / Backend Connection Status Pill */
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--c-text-muted);
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--c-border);
+  padding: 5px 12px;
+  border-radius: 20px;
+}
+
+.status-indicator .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c-danger);
+  box-shadow: 0 0 8px var(--c-danger);
+  transition: all 0.3s ease;
+}
+
+.status-indicator.connected {
+  border-color: rgba(16, 185, 129, 0.25);
+  background: rgba(16, 185, 129, 0.05);
+  color: var(--c-text);
+}
+
+.status-indicator.connected .dot {
+  background: var(--c-success);
+  box-shadow: 0 0 8px var(--c-success);
+}
+
+.screen-content {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+
+.tab-pane {
+  display: none;
+  height: 100%;
+}
+
+.tab-pane.active {
+  display: block;
+  animation: slideInPanel 0.25s var(--transition-normal);
+}
+
+@keyframes slideInPanel {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+

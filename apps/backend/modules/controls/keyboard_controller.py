@@ -1,7 +1,14 @@
-import pyautogui
-import keyboard
 import logging
-import time
+
+try:
+    import pyautogui
+except Exception:
+    pyautogui = None
+
+try:
+    import keyboard
+except Exception:
+    keyboard = None
 
 logger = logging.getLogger("JARVIS.Keyboard")
 
@@ -24,8 +31,8 @@ class KeyboardController:
     Caller -> type_text()/press_key()/hold_key() -> pyautogui/keyboard modules -> OS input queue -> Caller
     """
     def __init__(self):
-        # Fail-safe to allow user to abort by moving mouse to corner
-        pyautogui.FAILSAFE = True
+        if pyautogui is not None:
+            pyautogui.FAILSAFE = True
         logger.info("KeyboardController initialized.")
 
     def type_text(self, text: str, interval: float = 0.01):

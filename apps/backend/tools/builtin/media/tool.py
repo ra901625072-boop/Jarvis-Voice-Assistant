@@ -3,7 +3,7 @@ from livekit.agents import llm
 from tools.builtin.base import JarvisToolset
 from modules.controls.volume_controller import VolumeController
 from modules.controls.brightness_controller import BrightnessController
-from modules.core.security_manager import SecurityManager
+from modules.security.manager import SecurityManager
 
 
 class MediaTools(JarvisToolset):

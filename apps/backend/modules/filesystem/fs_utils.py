@@ -7,15 +7,8 @@ logger = logging.getLogger("JARVIS.FSUtils")
 
 def get_drives() -> list:
     """Returns a list of all available drive letters on Windows."""
-    drives = []
-    if platform.system() == "Windows":
-        for letter in string.ascii_uppercase:
-            drive = f"{letter}:\\"
-            if os.path.exists(drive):
-                drives.append(drive)
-    else:
-        drives = ["/"]
-    return drives
+    from modules.security.manager import SecurityManager
+    return SecurityManager._get_drives()
 
 def is_safe_path(path: str) -> bool:
     """
@@ -32,7 +25,7 @@ def is_safe_path(path: str) -> bool:
         DeprecationWarning,
         stacklevel=2,
     )
-    from modules.core.security_manager import SecurityManager
+    from modules.security.manager import SecurityManager
     return SecurityManager().is_safe_path(path)
 
 def close_explorer_window(path: str) -> bool:

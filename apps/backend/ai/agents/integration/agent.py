@@ -1,10 +1,9 @@
 import logging
-import json
-import asyncio
-from typing import Dict, Any
+from typing import Optional
 
 from ai.agents.base_agent import BaseAgent
 from ai.agents.types import AgentTask, AgentResult
+from modules.security.egress import SafeEgressClient, SSRFValidationError
 
 logger = logging.getLogger("JARVIS.IntegrationAgent")
 
@@ -63,22 +62,135 @@ class IntegrationAgent(BaseAgent):
         response = await self.generate_response(prompt, response_mime_type="application/json")
         try:
             data = self._parse_json_response(response)
+            method = data.get("method", "GET")
+            url = data.get("url")
+            headers = data.get("headers", {})
+            body = data.get("body")
+            
+            if url:
+                egress_resp = await SafeEgressClient.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    json=body if isinstance(body, dict) else None,
+                    data=body if isinstance(body, str) else None,
+                )
+                data["http_status"] = egress_resp["status"]
+                data["http_response"] = egress_resp["text"]
+
             return self._create_result(task, success=True, result=data)
+        except SSRFValidationError as e:
+            return self._create_result(task, success=False, error=f"SSRF security policy blocked API request: {e}")
         except Exception as e:
-            return self._create_result(task, success=False, error=f"Failed to parse LLM response: {e}")
+            return self._create_result(task, success=False, error=f"Failed to parse or execute API call: {e}")
 
     async def _handle_webhook_flow(self, task: AgentTask, payload: dict) -> AgentResult:
-        # Generic webhook handling stub
-        return self._create_result(task, success=True, result={"status": "handled", "payload": payload})
+        url = payload.get("url") or payload.get("target_url")
+        if not url:
+            return self._create_result(task, success=False, error="Missing target 'url' in webhook_flow payload")
+        method = payload.get("method", "POST").upper()
+        headers = payload.get("headers", {"Content-Type": "application/json"})
+        body = payload.get("data") or payload.get("body") or payload.get("payload", {})
+
+        try:
+            resp = await SafeEgressClient.request(
+                method=method,
+                url=url,
+                headers=headers,
+                json=body if isinstance(body, dict) else None,
+                data=str(body) if not isinstance(body, dict) else None,
+            )
+            return self._create_result(
+                task,
+                success=resp["status"] < 400,
+                result={"status": resp["status"], "response": resp["text"][:1000], "url": url}
+            )
+        except SSRFValidationError as e:
+            return self._create_result(task, success=False, error=f"SSRF security policy blocked webhook dispatch: {e}")
+        except Exception as e:
+            return self._create_result(task, success=False, error=f"Webhook dispatch failed: {e}")
 
     async def _handle_call_graphql(self, task: AgentTask, payload: dict) -> AgentResult:
-        return self._create_result(task, success=True, result={"status": "graphql_stub", "payload": payload})
+        url = payload.get("url") or payload.get("endpoint")
+        query = payload.get("query")
+        if not url or not query:
+            return self._create_result(task, success=False, error="GraphQL requires 'url' and 'query' in payload")
+        variables = payload.get("variables", {})
+        headers = payload.get("headers", {"Content-Type": "application/json"})
+
+        try:
+            gql_payload = {"query": query, "variables": variables}
+            resp = await SafeEgressClient.request(
+                method="POST",
+                url=url,
+                headers=headers,
+                json=gql_payload
+            )
+            import json as json_lib
+            try:
+                data = json_lib.loads(resp["text"])
+            except Exception:
+                data = resp["text"]
+            return self._create_result(
+                task,
+                success=resp["status"] == 200,
+                result={"status": resp["status"], "data": data}
+            )
+        except SSRFValidationError as e:
+            return self._create_result(task, success=False, error=f"SSRF security policy blocked GraphQL request: {e}")
+        except Exception as e:
+            return self._create_result(task, success=False, error=f"GraphQL execution failed: {e}")
 
     async def _handle_authenticate(self, task: AgentTask, payload: dict) -> AgentResult:
-        return self._create_result(task, success=True, result={"status": "auth_stub", "payload": payload})
+        auth_type = payload.get("type", "api_key")
+        key = payload.get("key") or payload.get("token")
+        service = payload.get("service", "generic")
+        if not key:
+            return self._create_result(task, success=False, error=f"Missing credential key/token for service '{service}'")
+        
+        # Return explicit dry_run / not_implemented status rather than simulating completed live auth
+        return self._create_result(
+            task,
+            success=True,
+            result={
+                "status": "not_implemented",
+                "service": service,
+                "type": auth_type,
+                "detail": f"Durable OAuth/API-key integration for '{service}' is not configured in this environment."
+            }
+        )
 
     async def _handle_connect_service(self, task: AgentTask, payload: dict) -> AgentResult:
-        return self._create_result(task, success=True, result={"status": "connect_stub", "payload": payload})
+        service = payload.get("service")
+        endpoint = payload.get("endpoint")
+        if not service and not endpoint:
+            return self._create_result(task, success=False, error="Missing service or endpoint parameters")
+        
+        return self._create_result(
+            task,
+            success=True,
+            result={
+                "status": "dry_run",
+                "service": service or endpoint,
+                "active": False,
+                "detail": f"Service connection for '{service or endpoint}' validated in dry-run mode (no live session)."
+            }
+        )
 
     async def _handle_sync_data(self, task: AgentTask, payload: dict) -> AgentResult:
-        return self._create_result(task, success=True, result={"status": "sync_stub", "payload": payload})
+        source = payload.get("source", "unknown")
+        destination = payload.get("destination", "unknown")
+        records = payload.get("records", [])
+        
+        return self._create_result(
+            task,
+            success=True,
+            result={
+                "status": "not_implemented",
+                "source": source,
+                "destination": destination,
+                "records_count": len(records) if isinstance(records, list) else 1,
+                "detail": f"Live data synchronization from '{source}' to '{destination}' requires a registered sync provider."
+            }
+        )
+

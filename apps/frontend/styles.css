@@ -1,0 +1,9 @@
+/* JARVIS Main Stylesheet Index */
+@import url('styles/base.css');
+@import url('styles/components.css');
+@import url('styles/layout.css');
+@import url('styles/voice.css');
+@import url('styles/tasks.css');
+@import url('styles/files.css');
+@import url('styles/settings.css');
+@import url('styles/inspector.css');

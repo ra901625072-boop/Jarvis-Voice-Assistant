@@ -1,9 +1,6 @@
-import asyncio
-import logging
-from typing import List, Dict, Set, Any, Optional
-from modules.core.state_manager import AgentStateManager, SubTask, AgentState
-from modules.execution.execution_engine import ExecutionEngine
-from modules.planning.dag_compiler import DAGCompiler
+from modules.planning.task_graph import TaskGraph, TaskNode, TaskStatus
+from modules.planning.risk_gate import RiskGate, PlanningBudget
+from modules.planning.replanner import Replanner, ReplanStrategy
 
 logger = logging.getLogger("JARVIS.DAGScheduler")
 
@@ -11,12 +8,14 @@ class DAGScheduler:
     """
     DAGScheduler executes a compiled dependency graph of SubTasks concurrently and reactively.
     Utilizes event-driven asyncio.Event completion signaling, resource semaphores,
-    cancellation token tracking, and programmatic verification engines.
+    cancellation token tracking, programmatic verification engines, RiskGate policies, and Replanner.
     """
-    def __init__(self, execution_engine: ExecutionEngine, memory_manager = None):
+    def __init__(self, execution_engine: ExecutionEngine, memory_manager = None, risk_gate: Optional[RiskGate] = None, replanner: Optional[Replanner] = None):
         self.engine = execution_engine
         self.state_manager = AgentStateManager()
         self.memory_manager = memory_manager
+        self.risk_gate = risk_gate or RiskGate()
+        self.replanner = replanner or Replanner(memory_manager=memory_manager)
         self._running_tasks: List[asyncio.Task] = []
         
         # Concurrency & Resource Control Semaphores
@@ -139,7 +138,6 @@ class DAGScheduler:
         """
         Executes a single node reactively, waiting on parent dependency events.
         """
-        import time
 
         # 1. Wait for all parent tasks to complete
         for dep_id in task.dependencies:
@@ -170,6 +168,15 @@ class DAGScheduler:
         task.status = "in_progress"
         self.state_manager.persist_state(self.memory_manager)
 
+        # 4b. Pre-flight Risk & Budget Authorization
+        if self.risk_gate:
+            task_node = TaskNode.from_legacy_subtask(task)
+            authorized, auth_err = await self.risk_gate.check_and_authorize(task_node)
+            if not authorized:
+                logger.error(f"Subtask '{task.description}' blocked by RiskGate: {auth_err}")
+                self.state_manager.update_task_status(task, "failed", error=auth_err)
+                node_events[task.id].set()
+                return
 
         # 5. Acquire resource limits
         sem = self._get_resource_semaphore(task.tool_name)
@@ -223,8 +230,62 @@ class DAGScheduler:
             if not task.tool_name:
                 return "Success (No tool specified)"
             
+            # --- Fallback argument extraction if args are missing/empty ---
+            if task.args is None:
+                task.args = {}
+            
+            if task.tool_name == "open_url" and "url" not in task.args:
+                import re
+                match = re.search(r'https?://[^\s]+', task.description)
+                if match:
+                    task.args["url"] = match.group(0)
+                else:
+                    match = re.search(r'[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s]*)?', task.description)
+                    if match:
+                        task.args["url"] = "https://" + match.group(0)
+            
+            elif task.tool_name == "automate_desktop_flow" and "goal" not in task.args:
+                task.args["goal"] = task.description
+                
+            elif task.tool_name in ("search_google", "search_google_live", "google_search", "duckduckgo_search", "web_search", "research_topic") and "query" not in task.args:
+                task.args["query"] = task.description
+                
+            elif task.tool_name in ("open_application", "close_application") and "app_name" not in task.args:
+                task.args["app_name"] = task.description
+                
+            # --- Resolve placeholders from dependency results ---
+            plan = self.state_manager.active_plan
+            if plan and task.args:
+                import re
+                
+                def replace_placeholder(match):
+                    step_type = match.group(1)
+                    step_id = int(match.group(2))
+                    for pt in plan.subtasks:
+                        if pt.id == step_id:
+                            if pt.status == "completed" and pt.result is not None:
+                                return pt.result
+                            return f"[Step {step_id} is {pt.status}]"
+                    return match.group(0)
+                
+                pattern = re.compile(r'\b([A-Za-z_]+)_(?:FROM|OF)_STEP_(\d+)\b', re.IGNORECASE)
+                
+                def resolve_val(val):
+                    if isinstance(val, str):
+                        return pattern.sub(replace_placeholder, val)
+                    elif isinstance(val, dict):
+                        return {k: resolve_val(v) for k, v in val.items()}
+                    elif isinstance(val, list):
+                        return [resolve_val(item) for item in val]
+                    return val
+                
+                task.args = resolve_val(task.args)
+
             result = await self.engine.dispatch(task.tool_name, task.args)
-            if isinstance(result, str) and (result.startswith("Error:") or result.startswith("SECURITY WARNING:")):
+            if self.risk_gate:
+                self.risk_gate.budget.record_tool_call()
+            logger.debug("TASK SCHEDULER DEBUG - Result: %r Type: %s Starts with: %s", result, type(result), result.startswith("Verification FAILED:") if isinstance(result, str) else False)
+            if isinstance(result, str) and (result.startswith("Error:") or result.startswith("SECURITY WARNING:") or result.startswith("Verification FAILED:")):
                 raise RuntimeError(result)
             return result
         except Exception as e:

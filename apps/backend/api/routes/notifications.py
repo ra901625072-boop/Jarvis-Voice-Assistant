@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from api.middleware.auth import get_current_user, require_role
-from integrations.communication.notification_service import NotificationService
+from api.dependencies import get_memory
+from modules.notification.notification_service import NotificationService
 import os
 import json
 import logging
@@ -42,13 +43,17 @@ async def get_notification_logs(current_user: dict = Depends(get_current_user)):
         return {"notifications": []}
 
 @router.post("")
-async def trigger_notification(body: dict, current_user: dict = Depends(require_role(["admin"]))):
+async def trigger_notification(body: dict, current_user: dict = Depends(get_current_user), memory = Depends(get_memory)):
     notif_type = body.get("type", "webhook")
     title = body.get("title", "JARVIS Alert")
     message = body.get("message")
     
     if not message:
         raise HTTPException(status_code=400, detail="Missing required field: message")
+        
+    # Restrict webhooks to admins
+    if notif_type == "webhook" and current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only administrators can send webhook notifications")
         
     success = False
     if notif_type == "webhook":
@@ -58,8 +63,37 @@ async def trigger_notification(body: dict, current_user: dict = Depends(require_
         success = NotificationService.send_webhook(url, title, message, body.get("status", "info"))
     elif notif_type == "email":
         recipient = body.get("recipient")
+        if not recipient:
+            username = current_user.get("sub")
+            if username:
+                conn = memory.dbs.get_conn()
+                c = conn.cursor()
+                c.execute("SELECT email FROM users WHERE username = ?", (username,))
+                row = c.fetchone()
+                if row and row[0]:
+                    recipient = row[0]
+        if not recipient:
+            recipient = os.environ.get("JARVIS_NOTIFY_EMAIL")
+        if not recipient:
+            raise HTTPException(status_code=400, detail="Recipient email not supplied and not configured in profile")
+            
         html_content = f"<h3>{title}</h3><p>{message}</p>"
         success = NotificationService.send_email(title, html_content, recipient)
+    elif notif_type == "sms":
+        recipient = body.get("recipient")
+        if not recipient:
+            username = current_user.get("sub")
+            if username:
+                conn = memory.dbs.get_conn()
+                c = conn.cursor()
+                c.execute("SELECT phone_number FROM users WHERE username = ?", (username,))
+                row = c.fetchone()
+                if row and row[0]:
+                    recipient = row[0]
+        if not recipient:
+            raise HTTPException(status_code=400, detail="Recipient phone number not supplied and not configured in profile")
+            
+        success = NotificationService.send_sms(message, recipient)
     else:
         raise HTTPException(status_code=400, detail=f"Unsupported notification type: {notif_type}")
         

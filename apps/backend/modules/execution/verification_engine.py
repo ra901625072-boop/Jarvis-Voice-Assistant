@@ -58,9 +58,10 @@ class VerificationEngine:
             try:
                 if ":" in target:
                     parts = target.split(":")
-                    host = parts[0]
+                    host = parts[0].strip() if parts[0].strip() else "127.0.0.1"
                     port = int(parts[1])
                 else:
+                    host = "127.0.0.1"
                     port = int(target)
             except (ValueError, IndexError):
                 logger.warning(f"Invalid port_open target format: '{target}'")

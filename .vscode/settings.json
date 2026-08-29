@@ -1,7 +1,7 @@
 {
     "python.defaultInterpreterPath": "${workspaceFolder}/venv/Scripts/python.exe",
     "python.terminal.activateEnvironment": true,
-    "terminal.integrated.cwd": "${workspaceFolder}/backend",
+    "terminal.integrated.cwd": "${workspaceFolder}/apps/backend",
     "terminal.integrated.profiles.windows": {
         "PowerShell": {
             "source": "PowerShell",

@@ -15,7 +15,6 @@ UnifiedTaskRegistry provides:
   - shutdown()       — Graceful teardown.
 """
 import asyncio
-import json
 import logging
 import sqlite3
 import threading
@@ -23,7 +22,7 @@ import time
 import uuid
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 logger = logging.getLogger("JARVIS.TaskRegistry")
 
@@ -86,13 +85,9 @@ class UnifiedTaskRegistry:
 
         import os
         if db_path is None:
-            db_dir = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                "..",
-                "database",
-            )
-            os.makedirs(db_dir, exist_ok=True)
-            db_path = os.path.join(db_dir, "unified_tasks.db")
+            from config.settings import DATA_DIR
+            os.makedirs(DATA_DIR, exist_ok=True)
+            db_path = os.path.join(DATA_DIR, "unified_tasks.db")
 
         self._db_path = db_path
         self._lock = threading.Lock()
@@ -111,7 +106,8 @@ class UnifiedTaskRegistry:
     # ── DB ────────────────────────────────────────────────────────────────────
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self._db_path) as conn:
+        with sqlite3.connect(self._db_path, timeout=30.0) as conn:
+            conn.execute("PRAGMA busy_timeout=30000")
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("""
@@ -132,7 +128,8 @@ class UnifiedTaskRegistry:
 
     def _save(self, rec: TaskRecord) -> None:
         try:
-            with sqlite3.connect(self._db_path) as conn:
+            with sqlite3.connect(self._db_path, timeout=30.0) as conn:
+                conn.execute("PRAGMA busy_timeout=30000")
                 conn.execute("""
                     INSERT OR REPLACE INTO tasks
                         (task_id, task_type, status, progress, description,
@@ -283,7 +280,8 @@ class UnifiedTaskRegistry:
     def list_tasks(self, limit: int = 20) -> List[TaskRecord]:
         """Return the most recent `limit` task records."""
         try:
-            with sqlite3.connect(self._db_path) as conn:
+            with sqlite3.connect(self._db_path, timeout=30.0) as conn:
+                conn.execute("PRAGMA busy_timeout=30000")
                 rows = conn.execute(
                     "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
                 ).fetchall()

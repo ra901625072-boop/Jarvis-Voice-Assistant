@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from urllib.parse import quote_plus, urlparse
@@ -6,7 +7,10 @@ from typing import Dict, List, Tuple
 logger = logging.getLogger("JARVIS.GoogleSearch")
 
 # --- Tunable constants -------------------------------------------------
-ALLOWED_CRAWL_DOMAINS = ("google.com", "wikipedia.org")
+EXCLUDE_CRAWL_DOMAINS = (
+    "facebook.com", "twitter.com", "instagram.com", "tiktok.com", 
+    "youtube.com", "vimeo.com", "pinterest.com", "linkedin.com", "reddit.com"
+)
 CACHE_TTL_SECONDS = 300
 SNIPPET_MAX_CHARS = 300
 PAGE_CONTENT_MAX_CHARS = 2000
@@ -29,6 +33,8 @@ class GoogleSearch:
     def __init__(self, browser_controller):
         self.browser_ctrl = browser_controller
         self._search_cache: Dict[str, float] = {}  # normalized query -> last search time
+        self._search_lock = asyncio.Lock()
+
 
     # ------------------------------------------------------------------
     # Caching
@@ -75,18 +81,12 @@ class GoogleSearch:
             netloc = urlparse(url).netloc.lower()
         except Exception:
             return False
-        return any(domain in netloc for domain in ALLOWED_CRAWL_DOMAINS)
+        return not any(domain in netloc for domain in EXCLUDE_CRAWL_DOMAINS)
 
-    async def _extract_generic_links(self) -> List[Dict[str, str]]:
+    async def _extract_generic_links(self, page=None) -> List[Dict[str, str]]:
         """
         Extract {title, url, snippet} for each visible result heading on the
         current page.
-
-        This runs as a single in-page `page.evaluate` call instead of doing
-        per-heading round trips (evaluate_handle -> get_attribute -> evaluate
-        -> dispose, repeated for every <h3>). For a typical results page with
-        N headings that's roughly 4N Playwright IPC round trips collapsed
-        into 1, which is the main latency win in this module.
         """
         js = """
             () => {
@@ -136,7 +136,8 @@ class GoogleSearch:
         """ % SNIPPET_MAX_CHARS
 
         try:
-            raw = await self.browser_ctrl.page.evaluate(js)
+            target_page = page or (await self.browser_ctrl.get_or_create_content_page())
+            raw = await target_page.evaluate(js)
             return raw or []
         except Exception as e:
             logger.error(f"Error parsing generic links: {e}")
@@ -150,14 +151,14 @@ class GoogleSearch:
     async def _crawl_result(self, result: Dict[str, str]) -> Tuple[str, bool]:
         """
         Get body text for one result. Only navigates to the page if its
-        domain is on the crawl whitelist; otherwise reuses the snippet
+        domain is not on the crawl blacklist; otherwise reuses the snippet
         already scraped from the results page. Returns (content, success).
         """
         if not self._is_crawlable(result["url"]):
             snippet = result.get("snippet", "")
             if snippet:
                 return snippet, True
-            return "[Crawl restricted to Google and Wikipedia domains]", False
+            return "[Crawl restricted for social/media domains]", False
 
         pooled_page = None
         try:
@@ -196,71 +197,94 @@ class GoogleSearch:
 
         return "\n".join(lines), successful_crawls
 
-    async def _wait_for_results(self) -> None:
+    async def _wait_for_results(self, page=None) -> None:
         """Best-effort wait for result headings instead of a fixed sleep."""
         try:
-            await self.browser_ctrl.page.wait_for_selector("h3", timeout=SELECTOR_WAIT_MS)
+            target_page = page or (await self.browser_ctrl.get_or_create_content_page())
+            await target_page.wait_for_selector("h3", timeout=SELECTOR_WAIT_MS)
         except Exception:
             pass  # page may genuinely have no h3 results; extraction will just return []
+
+    async def _safe_goto(self, url: str, page=None, timeout: int = NAV_TIMEOUT_MS) -> bool:
+        try:
+            target_page = page or (await self.browser_ctrl.get_or_create_content_page())
+            await target_page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+            return True
+        except Exception as e:
+            if "ERR_ABORTED" in str(e) or "target closed" in str(e).lower():
+                try:
+                    target_page = page or (await self.browser_ctrl.get_or_create_content_page())
+                    await target_page.goto(url, wait_until="commit", timeout=timeout)
+                    return True
+                except Exception:
+                    pass
+            logger.warning(f"GoogleSearch safe_goto failed for {url}: {e}")
+            return False
 
     # ------------------------------------------------------------------
     # Live search (navigates + scrapes + optionally crawls top results)
     # ------------------------------------------------------------------
     async def search_live(self, query: str, num_results: int = 3, engine: str = "google") -> str:
-        logger.info(f"Performing live search via Playwright: {query} (engine: {engine})")
-        await self.browser_ctrl._ensure_driver()
-        if not self.browser_ctrl.page:
-            return "Error: WebDriver is not initialized."
+        async with self._search_lock:
+            logger.info(f"Performing live search via Playwright: {query} (engine: {engine})")
+            await self.browser_ctrl._ensure_driver()
+            
+            # Always obtain a dedicated content tab (NEVER the server tab!)
+            search_page = await self.browser_ctrl.get_or_create_content_page()
+            if not search_page:
+                return "Error: WebDriver is not initialized."
 
-        if engine not in ("google", "wikipedia"):
-            logger.warning(f"Unknown engine '{engine}' requested; defaulting to wikipedia fallback path.")
+            if engine not in ("google", "wikipedia"):
+                logger.warning(f"Unknown engine '{engine}' requested; defaulting to wikipedia fallback path.")
 
-        if engine == "google":
+            if engine == "google":
+                try:
+                    google_url = f"https://www.google.com/search?q={quote_plus(query)}"
+                    nav_ok = await self._safe_goto(google_url, page=search_page, timeout=NAV_TIMEOUT_MS)
+                    if nav_ok:
+                        await self._wait_for_results(search_page)
+
+                        results = await self._extract_generic_links(search_page)
+                        if results:
+                            content, successful = await self._build_aggregated_content(
+                                results, num_results, f"Search Results for '{query}':"
+                            )
+                            if successful > 0:
+                                await search_page.bring_to_front()
+                                return content
+                            logger.warning("Google search results had no satisfactory content. Trying Wikipedia fallback...")
+                        else:
+                            logger.warning("Google search returned no results. Trying Wikipedia fallback...")
+                except Exception as e:
+                    logger.error(f"Google search failed with error: {e}. Trying Wikipedia fallback...")
+
+                engine = "wikipedia"
+
             try:
-                google_url = f"https://www.google.com/search?q={quote_plus(query)}"
-                await self.browser_ctrl.page.goto(google_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
-                await self._wait_for_results()
+                wiki_url = f"https://en.wikipedia.org/w/index.php?search={quote_plus(query)}"
+                await self._safe_goto(wiki_url, page=search_page, timeout=NAV_TIMEOUT_MS)
 
-                results = await self._extract_generic_links()
-                if results:
-                    content, successful = await self._build_aggregated_content(
-                        results, num_results, f"Search Results for '{query}':"
+                current_url = search_page.url or ""
+                if "/wiki/" in current_url:
+                    page_text = await search_page.evaluate("document.body.innerText")
+                    cleaned = " ".join(line.strip() for line in page_text.split("\n") if line.strip())
+                    truncated = cleaned[:WIKI_DIRECT_MAX_CHARS] + ("..." if len(cleaned) > WIKI_DIRECT_MAX_CHARS else "")
+                    return (
+                        f"Wikipedia direct page match content for '{query}':\n\n"
+                        f"URL: {current_url}\nCONTENT: {truncated}"
                     )
-                    if successful > 0:
-                        await self.browser_ctrl.page.bring_to_front()
-                        return content
-                    logger.warning("Google search results had no satisfactory content. Trying Wikipedia fallback...")
-                else:
-                    logger.warning("Google search returned no results. Trying Wikipedia fallback...")
-            except Exception as e:
-                logger.error(f"Google search failed with error: {e}. Trying Wikipedia fallback...")
 
-            engine = "wikipedia"
+                await self._wait_for_results(search_page)
+                results = await self._extract_generic_links(search_page)
+                if not results:
+                    return "Failed to retrieve search results from Google and Wikipedia."
 
-        try:
-            wiki_url = f"https://en.wikipedia.org/w/index.php?search={quote_plus(query)}"
-            await self.browser_ctrl.page.goto(wiki_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
-
-            current_url = self.browser_ctrl.page.url
-            if "/wiki/" in current_url:
-                page_text = await self.browser_ctrl.page.evaluate("document.body.innerText")
-                cleaned = " ".join(line.strip() for line in page_text.split("\n") if line.strip())
-                truncated = cleaned[:WIKI_DIRECT_MAX_CHARS] + ("..." if len(cleaned) > WIKI_DIRECT_MAX_CHARS else "")
-                return (
-                    f"Wikipedia direct page match content for '{query}':\n\n"
-                    f"URL: {current_url}\nCONTENT: {truncated}"
+                content, _ = await self._build_aggregated_content(
+                    results, num_results, f"Wikipedia Search Results for '{query}':"
                 )
+                await search_page.bring_to_front()
+                return content
+            except Exception as e:
+                return f"Search fallback error: {e}"
 
-            await self._wait_for_results()
-            results = await self._extract_generic_links()
-            if not results:
-                return "Failed to retrieve search results from Google and Wikipedia."
-
-            content, _ = await self._build_aggregated_content(
-                results, num_results, f"Wikipedia Search Results for '{query}':"
-            )
-            await self.browser_ctrl.page.bring_to_front()
-            return content
-        except Exception as e:
-            return f"Search fallback error: {e}"
 

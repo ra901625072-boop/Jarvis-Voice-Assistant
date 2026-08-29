@@ -1,0 +1,316 @@
+/* ==========================================================================
+   INSPECTOR PANEL — contextual right-side drawer for tasks / agents / workflows
+   ========================================================================== */
+
+.inspector-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 899;
+  opacity: 0;
+  transition: opacity var(--transition-normal);
+}
+
+.inspector-backdrop.open {
+  opacity: 1;
+}
+
+.inspector-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 420px;
+  max-width: 92vw;
+  background: var(--c-surface-light);
+  backdrop-filter: blur(30px);
+  -webkit-backdrop-filter: blur(30px);
+  border-left: 1px solid var(--c-border);
+  box-shadow: -24px 0 60px rgba(0, 0, 0, 0.55);
+  z-index: 900;
+  transform: translateX(100%);
+  transition: transform var(--transition-normal);
+  display: flex;
+  flex-direction: column;
+}
+
+.inspector-panel.open {
+  transform: translateX(0);
+}
+
+.inspector-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid var(--c-border);
+  flex-shrink: 0;
+}
+
+.inspector-header-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.inspector-kind {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  color: var(--c-accent);
+  font-weight: 600;
+}
+
+.inspector-title {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.btn-inspector-close {
+  background: transparent;
+  border: none;
+  color: var(--c-text-muted, rgba(255,255,255,0.5));
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  transition: background var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.btn-inspector-close:hover {
+  background: rgba(255,255,255,0.06);
+  color: #fff;
+}
+
+.btn-inspector-close svg {
+  width: 18px;
+  height: 18px;
+}
+
+.inspector-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.inspector-status-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.inspector-status-pill {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  text-transform: uppercase;
+  border: 1px solid rgba(255,255,255,0.12);
+  color: rgba(255,255,255,0.7);
+}
+
+.inspector-status-pill.status-running { color: var(--c-primary); border-color: var(--c-primary); background: var(--c-primary-glow); }
+.inspector-status-pill.status-completed,
+.inspector-status-pill.status-done,
+.inspector-status-pill.status-online { color: var(--c-success); border-color: var(--c-success); background: var(--c-success-glow); }
+.inspector-status-pill.status-failed,
+.inspector-status-pill.status-error { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-glow); }
+.inspector-status-pill.status-queued,
+.inspector-status-pill.status-waiting { color: var(--c-warning); border-color: var(--c-warning); background: var(--c-warning-glow); }
+
+.inspector-progress-block {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.inspector-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.inspector-field-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12.5px;
+  padding: 6px 0;
+  border-bottom: 1px dashed rgba(255,255,255,0.06);
+}
+
+.inspector-field-label {
+  color: rgba(255,255,255,0.45);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.inspector-field-value {
+  color: #fff;
+  text-align: right;
+  max-width: 60%;
+  overflow-wrap: break-word;
+}
+
+.inspector-field-value code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: rgba(0,0,0,0.3);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.inspector-section-title {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 1px;
+  color: var(--c-glow, var(--c-accent));
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+.inspector-description {
+  font-size: 13px;
+  color: rgba(255,255,255,0.65);
+  line-height: 1.5;
+}
+
+.inspector-muted {
+  color: rgba(255,255,255,0.35);
+  font-style: italic;
+}
+
+.inspector-error-block,
+.inspector-result-block {
+  background: rgba(0,0,0,0.3);
+  border-radius: 8px;
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.inspector-error-block { color: var(--c-danger); border: 1px solid rgba(239,68,68,0.2); }
+.inspector-result-block { color: rgba(255,255,255,0.8); border: 1px solid rgba(255,255,255,0.06); }
+
+.inspector-raw-json summary {
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.5px;
+  color: rgba(255,255,255,0.4);
+  text-transform: uppercase;
+}
+
+.inspector-raw-json pre {
+  margin-top: 8px;
+  background: rgba(0,0,0,0.3);
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 11px;
+  overflow-x: auto;
+  max-height: 260px;
+  overflow-y: auto;
+  color: rgba(255,255,255,0.6);
+}
+
+.inspector-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.inspector-actions button {
+  flex: 1;
+  padding: 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.inspector-table-wrap,
+.inspector-dag-wrap {
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  background: rgba(0,0,0,0.2);
+}
+
+.inspector-dag-wrap {
+  overflow-x: auto;
+  padding: 8px;
+}
+
+.inspector-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.inspector-table th {
+  text-align: left;
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: rgba(255,255,255,0.4);
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--c-border);
+}
+
+.inspector-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  color: rgba(255,255,255,0.8);
+}
+
+.inspector-table code {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: rgba(255,255,255,0.5);
+}
+
+/* Cards that can open the inspector get a hover affordance */
+.js-open-inspector {
+  cursor: pointer;
+  transition: border-color var(--transition-fast), transform var(--transition-fast);
+}
+
+.js-open-inspector:hover {
+  border-color: var(--c-border-active, rgba(59,130,246,0.4));
+  transform: translateY(-1px);
+}
+
+/* ==========================================================================
+   WORKFLOW DAG SVG
+   ========================================================================== */
+
+.dag-svg {
+  display: block;
+}
+
+.dag-svg .dag-node rect {
+  transition: filter var(--transition-fast);
+}
+
+@media (max-width: 768px) {
+  .inspector-panel {
+    width: 100%;
+    max-width: 100%;
+  }
+}

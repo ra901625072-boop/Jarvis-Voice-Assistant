@@ -12,7 +12,10 @@ import contextlib
 from datetime import datetime, timedelta
 from rapidfuzz import fuzz
 from send2trash import send2trash
-from modules.filesystem.fs_utils import get_drives, is_safe_path, close_explorer_window
+from modules.filesystem.fs_utils import get_drives, close_explorer_window
+from modules.filesystem.fs_db import FSDatabase
+from modules.filesystem.fs_indexer import FSIndexer
+from modules.security.manager import SecurityManager
 
 logger = logging.getLogger("JARVIS.FileManager")
 
@@ -68,7 +71,11 @@ class ResourceLockManager:
                 self._metrics[key]["hold_duration"] += hold_dur
                 self._metrics[key]["owner_thread"] = None
                 self._metrics[key]["acquired_at"] = None
-            lock.release()
+                lock.release()
+                # Reclaim resources if no other thread is waiting
+                if self._metrics[key]["wait_count"] <= 0:
+                    self._locks.pop(key, None)
+                    self._metrics.pop(key, None)
 
     @contextlib.contextmanager
     def lock_resources(self, resources_list: list, timeout: float = 30.0):
@@ -127,86 +134,29 @@ class FileManager:
     FLOW:
     Caller -> search_file() / create_file() -> resolve_path() -> SQLite caches / thread locks / OS filesystem API -> Caller
     """
-    def __init__(self, db_path: str = None):
+    def __init__(self, db_path: str = None, security_manager=None):
         if db_path is None:
-            # Resolve db in backend/database folder
-            db_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "database")
-            os.makedirs(db_dir, exist_ok=True)
-            db_path = os.path.join(db_dir, "file_manager.db")
+            from config.settings import DATA_DIR
+            os.makedirs(DATA_DIR, exist_ok=True)
+            db_path = os.path.join(DATA_DIR, "file_manager.db")
         self.db_path = db_path
+        self.db = FSDatabase(self.db_path)
+        self.background_task = None
+        self.indexer = FSIndexer(self.db)
+        from modules.filesystem.provider_search import ProviderSearch
+        self.provider_search = ProviderSearch(self.db)
+        from modules.filesystem.learning_engine import LearningEngine
+        self.learning_engine = LearningEngine(self.db)
         self.lock_manager = ResourceLockManager()
-        self._db_lock = LegacyLockWrapper(self.lock_manager, 'db', self.db_path)
-        self._local = threading.local()
         self._path_cache = {}
         self._indexer_started = False
-        self._init_db()
         logger.info(f"FileManager initialized with DB: {db_path}")
+        from modules.security.manager import SecurityManager
+        self._security = security_manager or SecurityManager()
 
-    @property
-    def _shared_conn(self):
-        if not hasattr(self._local, "conn"):
-            self._local.conn = sqlite3.connect(self.db_path)
-            self._local.conn.execute("PRAGMA journal_mode=WAL")
-            self._local.conn.execute("PRAGMA synchronous=NORMAL")
-        return self._local.conn
-
-    def _init_db(self):
-        """Initializes the SQLite database tables."""
-        with self._db_lock:
-            conn = self._shared_conn
-            try:
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("PRAGMA synchronous=NORMAL")
-                
-                # History of opened / modified files
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS file_history (
-                        path TEXT PRIMARY KEY,
-                        filename TEXT NOT NULL,
-                        open_count INTEGER DEFAULT 1,
-                        last_opened TEXT NOT NULL
-                    )
-                """)
-                
-                # Local index cache of files
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS file_cache (
-                        path TEXT PRIMARY KEY,
-                        filename TEXT NOT NULL,
-                        filename_lower TEXT NOT NULL,
-                        extension TEXT,
-                        last_modified REAL,
-                        size INTEGER,
-                        is_dir INTEGER
-                    )
-                """)
-                conn.commit()
-            except Exception as e:
-                logger.error(f"Failed to initialize database: {e}")
-            
 
     def log_file_access(self, path: str):
-        """Logs a file access event to SQLite for search memory and ranking."""
-        try:
-            path = os.path.normpath(os.path.abspath(path))
-            filename = os.path.basename(path)
-            timestamp = datetime.now().isoformat()
-            with self._db_lock:
-                conn = self._shared_conn
-                try:
-                    conn.execute("""
-                        INSERT INTO file_history (path, filename, open_count, last_opened)
-                        VALUES (?, ?, 1, ?)
-                        ON CONFLICT(path) DO UPDATE SET
-                            open_count = open_count + 1,
-                            last_opened = excluded.last_opened
-                    """, (path, filename, timestamp))
-                    conn.commit()
-                except Exception as e:
-                    logger.error(f"Failed to log file access for {path}: {e}")
-                
-        except Exception as e:
-            logger.error(f"Error logging file access: {e}")
+        self.db.log_access(path, datetime.now().isoformat())
 
 
     def parse_nlp_query(self, query: str) -> dict:
@@ -230,8 +180,21 @@ class FileManager:
         elif "yesterday" in query_lower:
             filters["date_filter"] = "yesterday"
             
-        # Detect target directory (Downloads folder)
-        if any(w in query_lower for w in ["downloaded", "downloads", "download"]):
+        # Detect target directory (Drive or Downloads folder)
+        drive_match = re.search(r'\b(?:in\s+|on\s+|to\s+)?([a-zA-Z])\s*:\s*(?:\\|/)?', query_lower)
+        if not drive_match:
+            drive_match = re.search(r'\b(?:in\s+|on\s+|to\s+)?([a-zA-Z])\s+drive\b', query_lower)
+        if not drive_match:
+            drive_match = re.search(r'\bdrive\s+([a-zA-Z])\b', query_lower)
+            
+        if drive_match:
+            drive_letter = drive_match.group(1).upper()
+            filters["target_dir"] = f"{drive_letter}:\\"
+            query_lower = re.sub(r'\b(?:in\s+|on\s+|to\s+)?' + re.escape(drive_match.group(0)) + r'\b', '', query_lower)
+            query_lower = re.sub(r'\b[a-zA-Z]\s+drive\b', '', query_lower)
+            query_lower = re.sub(r'\bdrive\s+[a-zA-Z]\b', '', query_lower)
+            query_lower = re.sub(r'\b[a-zA-Z]:(?:\\|/)?', '', query_lower)
+        elif any(w in query_lower for w in ["downloaded", "downloads", "download"]):
             filters["target_dir"] = os.path.join(os.path.expanduser("~"), "Downloads")
             
         # Detect file type / extensions mapping
@@ -281,247 +244,72 @@ class FileManager:
         return filters
 
     def start_background_indexer(self, root_paths: list = None):
-        """Launches directory crawling to cache files in SQLite."""
         if getattr(self, '_indexer_started', False):
             return
         self._indexer_started = True
-        
-        if root_paths is None:
-            # Project root workspace
-            workspace = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            root_paths = [workspace]
-            
-            # User key folders
-            user_profile = os.environ.get("USERPROFILE")
-            if user_profile:
-                for folder in ["Documents", "Desktop", "Downloads"]:
-                    folder_path = os.path.join(user_profile, folder)
-                    if os.path.exists(folder_path):
-                        root_paths.append(folder_path)
-                        
-        thread = threading.Thread(target=self._background_index_task, args=(root_paths,), daemon=True)
-        thread.start()
+        self.indexer.start_background_indexer(root_paths)
 
-    def _background_index_task(self, root_paths: list):
-        """Walks folders to update sqlite cache."""
-        import time
-        ignore_dirs = {'.git', 'node_modules', 'venv', 'AppData', 'Windows', 'Program Files', 'Program Files (x86)', '__pycache__', 'Temp', 'Local', 'Roaming'}
-        chunk_size = 500
-        batch = []
-        
-        for root_path in root_paths:
-            if not os.path.exists(root_path):
-                continue
-            for root, dirs, files in os.walk(root_path):
-                # Prune ignored folders
-                dirs[:] = [d for d in dirs if d not in ignore_dirs]
-                
-                for name in files + dirs:
-                    path = os.path.join(root, name)
-                    try:
-                        stat = os.stat(path)
-                        filename_lower = name.lower()
-                        ext = os.path.splitext(filename_lower)[1]
-                        is_dir = 1 if os.path.isdir(path) else 0
-                        batch.append((
-                            os.path.normpath(path),
-                            name,
-                            filename_lower,
-                            ext,
-                            stat.st_mtime,
-                            stat.st_size,
-                            is_dir
-                        ))
-                    except (PermissionError, FileNotFoundError, OSError):
-                        continue
-                        
-                    if len(batch) >= chunk_size:
-                        self._save_cache_batch(batch)
-                        batch = []
-                        time.sleep(0.02) # Yield execution for system responsiveness
-                        
-            if batch:
-                self._save_cache_batch(batch)
-                batch = []
-        logger.info("Background file index completed indexing.")
-
-    def _save_cache_batch(self, batch: list):
-        with self._db_lock:
-            conn = self._shared_conn
-            try:
-                conn.executemany("""
-                    INSERT OR REPLACE INTO file_cache (path, filename, filename_lower, extension, last_modified, size, is_dir)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, batch)
-                conn.commit()
-            except Exception as e:
-                logger.error(f"Failed to save index batch to database: {e}")
-            
-
-    def _search_everything(self, query: str, limit: int = 100) -> list:
-        """Queries Everything SDK via ctypes DLL."""
-        results = []
-        try:
-            import ctypes
-            try:
-                everything = ctypes.windll.Everything64
-            except (OSError, AttributeError):
-                try:
-                    everything = ctypes.CDLL("Everything64.dll")
-                except OSError:
-                    return []
-            
-            everything.Everything_SetSearchW.argtypes = [ctypes.c_wchar_p]
-            everything.Everything_SetSearchW.restype = None
-            everything.Everything_QueryW.argtypes = [ctypes.c_bool]
-            everything.Everything_QueryW.restype = ctypes.c_bool
-            everything.Everything_GetNumResults.argtypes = []
-            everything.Everything_GetNumResults.restype = ctypes.c_uint32
-            everything.Everything_GetResultFullPathNameW.argtypes = [ctypes.c_uint32, ctypes.c_wchar_p, ctypes.c_uint32]
-            everything.Everything_GetResultFullPathNameW.restype = None
-            
-            everything.Everything_SetSearchW(query)
-            if not everything.Everything_QueryW(True):
-                return []
-                
-            num_results = everything.Everything_GetNumResults()
-            count = min(num_results, limit)
-            
-            buf_size = 4096
-            buf = ctypes.create_unicode_buffer(buf_size)
-            
-            for i in range(count):
-                everything.Everything_GetResultFullPathNameW(i, buf, buf_size)
-                path = buf.value
-                if path:
-                    results.append(path)
-        except Exception as e:
-            logger.debug(f"Everything SDK search unavailable: {e}")
-        return results
-
-    def _search_windows_index(self, filename: str, extensions: list = None, target_dir: str = None, date_filter: str = None, limit: int = 100) -> list:
-        """Queries Windows Search Index database via ADODB."""
-        results = []
-        if platform.system() != "Windows":
-            return []
+    def generate_query_variants(self, query: str) -> list:
+        variants = []
+        q = query.strip()
+        if not q:
+            return variants
             
         try:
-            import win32com.client
-            conn = win32com.client.Dispatch("ADODB.Connection")
-            conn.Open("Provider=Search.CollatorDSO;Extended Properties='Application=Windows';")
-            recordset = win32com.client.Dispatch("ADODB.Recordset")
+            from unidecode import unidecode
+            q_unidecode = unidecode(q)
+        except ImportError:
+            q_unidecode = q
             
-            select_clause = f"SELECT TOP {limit} System.ItemPathDisplay"
-            from_clause = "FROM SystemIndex"
-            
-            where_conditions = ["Scope='file:'"]
-            
-            if filename:
-                where_conditions.append(f"System.ItemName LIKE '%{filename}%'")
+        for base_q in set([q, q_unidecode]):
+            variants.append(base_q)
+            variants.append(base_q.lower())
+            norm = re.sub(r'[\-_\.]+', ' ', base_q)
+            norm = re.sub(r'\s+', ' ', norm).strip()
+            if norm not in variants:
+                variants.append(norm)
+            stripped = re.sub(r'\s+', '', norm)
+            if stripped not in variants:
+                variants.append(stripped)
+            variants.append(norm.replace(' ', '_'))
+            variants.append(norm.replace(' ', '-'))
+            variants.append(norm.replace(' ', '.'))
+            tokens = norm.split()
+            if 1 < len(tokens) <= 4:
+                variants.append(" ".join(reversed(tokens)))
+            if len(tokens) >= 2:
+                variants.append("".join([t[0] for t in tokens if t]))
                 
-            if extensions:
-                ext_conditions = []
-                for ext in extensions:
-                    ext_val = ext.lower() if ext.startswith('.') else f".{ext.lower()}"
-                    ext_conditions.append(f"System.FileExtension = '{ext_val}'")
-                if ext_conditions:
-                    where_conditions.append("(" + " OR ".join(ext_conditions) + ")")
-                    
-            if target_dir:
-                target_dir_norm = os.path.normpath(target_dir).replace("\\", "/")
-                where_conditions.append(f"directory='file:{target_dir_norm}'")
-                
-            if date_filter:
-                now = datetime.now()
-                if date_filter == "today":
-                    today_str = now.strftime("%Y-%m-%d 00:00:00")
-                    where_conditions.append(f"System.DateModified >= '{today_str}'")
-                elif date_filter == "yesterday":
-                    yesterday = now - timedelta(days=1)
-                    yesterday_start = yesterday.strftime("%Y-%m-%d 00:00:00")
-                    yesterday_end = yesterday.strftime("%Y-%m-%d 23:59:59")
-                    where_conditions.append(f"System.DateModified >= '{yesterday_start}' AND System.DateModified <= '{yesterday_end}'")
-                    
-            where_clause = "WHERE " + " AND ".join(where_conditions)
-            query = f"{select_clause} {from_clause} {where_clause}"
+        try:
+            import jellyfish
+            # Add phonetic representations if appropriate (for english-like words)
+            phonetic = jellyfish.metaphone(q)
+            if phonetic and phonetic not in variants:
+                variants.append(phonetic)
+            soundex = jellyfish.soundex(q)
+            if soundex and soundex not in variants:
+                variants.append(soundex)
+        except ImportError:
+            pass
             
-            recordset.Open(query, conn)
-            while not recordset.EOF:
-                path = recordset.Fields.Item("System.ItemPathDisplay").Value
-                if path:
-                    results.append(path)
-                recordset.MoveNext()
-                
-            recordset.Close()
-            conn.Close()
-            
-            seen = set()
-            unique_results = []
-            for r in results:
-                norm_p = os.path.normpath(r)
-                if norm_p not in seen:
-                    seen.add(norm_p)
-                    unique_results.append(norm_p)
-            return unique_results
-        except Exception as e:
-            logger.warning(f"Windows Search Index query failed: {e}")
-            return []
+        seen = set()
+        unique_variants = []
+        for v in variants:
+            if v and v not in seen:
+                seen.add(v)
+                unique_variants.append(v)
+        return unique_variants[:20]
 
     def _search_sqlite_cache(self, filename: str, extensions: list = None, target_dir: str = None, date_filter: str = None, limit: int = 100) -> list:
-        """Queries local sqlite database index cache."""
-        results = []
-        with self._db_lock:
-            conn = self._shared_conn
-            try:
-                cursor = conn.cursor()
-                query = "SELECT path FROM file_cache WHERE 1=1"
-                params = []
-                
-                if filename:
-                    query += " AND filename_lower LIKE ?"
-                    params.append(f"%{filename.lower()}%")
-                    
-                if extensions:
-                    placeholders = ",".join(["?"] * len(extensions))
-                    query += f" AND extension IN ({placeholders})"
-                    params.extend([ext.lower() if ext.startswith('.') else f".{ext.lower()}" for ext in extensions])
-                    
-                if target_dir:
-                    query += " AND path LIKE ?"
-                    params.append(f"{os.path.normpath(target_dir)}%")
-                    
-                if date_filter:
-                    now = time.time()
-                    one_day = 86400
-                    if date_filter == "today":
-                        query += " AND last_modified >= ?"
-                        params.append(now - one_day)
-                    elif date_filter == "yesterday":
-                        query += " AND last_modified >= ? AND last_modified < ?"
-                        params.append(now - 2 * one_day)
-                        params.append(now - one_day)
-                        
-                query += f" LIMIT {limit}"
-                cursor.execute(query, params)
-                results = [r[0] for r in cursor.fetchall()]
-            except Exception as e:
-                logger.error(f"SQLite cache query failed: {e}")
-            
-        return results
+        return self.db.search_cache(filename, extensions, target_dir, date_filter, limit)
 
-    def _search_threaded_scan(self, filename: str, root_dir: str = None, limit: int = 100, extensions: list = None) -> list:
-        """Parallel, threaded directory crawler fallback."""
+    def _search_threaded_scan(self, variants: list, root_dir: str = None, limit: int = 100, extensions: list = None) -> list:
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        
         search_paths = [root_dir] if root_dir else get_drives()
         ignore_dirs = {'.git', 'node_modules', 'venv', 'AppData', 'Windows', 'Program Files', 'Program Files (x86)', '__pycache__', 'Temp', 'Local', 'Roaming'}
-        
         results = []
-        filename = filename.lower()
-        
         if extensions:
             extensions = [ext.lower() if ext.startswith('.') else f".{ext.lower()}" for ext in extensions]
-            
         def scan_folder(folder_path):
             folder_results = []
             subfolders = []
@@ -530,16 +318,15 @@ class FileManager:
                     for entry in it:
                         name_lower = entry.name.lower()
                         name_without_ext, ext = os.path.splitext(name_lower)
-                        
                         if extensions and entry.is_file(follow_symlinks=False):
                             if ext not in extensions:
                                 continue
-                                
-                        if filename in name_without_ext:
-                            folder_results.append(entry.path)
-                            
-                        if entry.is_dir(follow_symlinks=False) and entry.name not in ignore_dirs:
+                        if entry.is_file(follow_symlinks=False):
+                            if any(v in name_without_ext for v in variants):
+                                folder_results.append(entry.path)
+                        elif entry.is_dir(follow_symlinks=False) and entry.name not in ignore_dirs:
                             subfolders.append(entry.path)
+                subfolders.sort(key=lambda f: 0 if any(v in os.path.basename(f).lower() for v in variants) else 1)
                 return folder_results, subfolders
             except (PermissionError, OSError):
                 return [], []
@@ -547,23 +334,20 @@ class FileManager:
         to_scan = list(search_paths)
         scanned_count = 0
         max_scanned = 5000
-        
         with ThreadPoolExecutor(max_workers=8) as executor:
             while to_scan and len(results) < limit and scanned_count < max_scanned:
                 futures = {executor.submit(scan_folder, folder): folder for folder in to_scan[:50]}
                 to_scan = to_scan[50:]
-                
                 for future in as_completed(futures):
                     scanned_count += 1
                     folder_results, subfolders = future.result()
                     results.extend(folder_results)
-                    to_scan.extend(subfolders)
+                    to_scan = subfolders + to_scan
                     if len(results) >= limit:
                         break
-                        
         return results
 
-    def _rank_results(self, paths: list, keyword: str, extensions: list = None, sort_by: str = None) -> list:
+    def _rank_results(self, paths: list, keyword: str, extensions: list = None, sort_by: str = None, source_metadata: dict = None) -> list:
         """Scores and ranks file path matches based on fuzzy similarity, recency, workspace location, and history."""
         if not paths:
             return []
@@ -573,16 +357,7 @@ class FileManager:
         workspace = os.path.normpath(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))).lower()
         
         # Load open history from SQLite database
-        history = {}
-        with self._db_lock:
-            conn = self._shared_conn
-            try:
-                cursor = conn.cursor()
-                cursor.execute("SELECT path, open_count, last_opened FROM file_history")
-                for row in cursor.fetchall():
-                    history[row[0]] = {"count": row[1], "last_opened": row[2]}
-            except Exception as e:
-                logger.warning(f"Failed to fetch history for ranking: {e}")
+        history = self.db.get_history()
             
                 
         now = time.time()
@@ -616,9 +391,6 @@ class FileManager:
             # 2. File modified recency score (0-100)
             recency_score = ((mtime - min_mtime) / mtime_range) * 100.0 if mtime > 0 else 0.0
             
-            # 3. Workspace location boost (0 or 100)
-            workspace_boost = 100.0 if path.lower().startswith(workspace) else 0.0
-            
             # 4. History boost based on usage count and open recency (0-100)
             history_boost = 0.0
             path_norm = os.path.normpath(path)
@@ -632,9 +404,33 @@ class FileManager:
                     logger.debug(f"Failed to parse last_opened timestamp for {path_norm}: {e}")
                     recency_boost = 0.0
                 history_boost = count_boost + recency_boost
+            
+            # 5. Source confidence & Alias confidence
+            alias_conf = 0.0
+            source_conf = 0.0
+            if source_metadata and path in source_metadata:
+                meta = source_metadata[path]
+                alias_conf = meta.get("alias_confidence", 0.0)
+                src = meta.get("source", "unknown")
+                if src in ("index", "alias"):
+                    source_conf = 100.0
+                elif src == "priority_scan":
+                    source_conf = 75.0
+                elif src == "drive_scan":
+                    source_conf = 55.0
+                elif src == "terminal":
+                    source_conf = 35.0
                 
-            # Combine score parts
-            score = (fuzzy_score * 0.5) + (recency_score * 0.25) + (workspace_boost * 0.1) + (history_boost * 0.15)
+            # Combine score parts using dynamic weights
+            w = self.learning_engine.state.get("weights", {
+                "fuzzy_score": 0.35, "recency_score": 0.15, "history_boost": 0.15, 
+                "alias_confidence": 0.20, "source_confidence": 0.15
+            })
+            score = (fuzzy_score * w.get("fuzzy_score", 0.35)) \
+                  + (recency_score * w.get("recency_score", 0.15)) \
+                  + (history_boost * w.get("history_boost", 0.15)) \
+                  + (alias_conf * w.get("alias_confidence", 0.20)) \
+                  + (source_conf * w.get("source_confidence", 0.15))
             
             # NLP modifier overrides
             if sort_by == "modified_desc":
@@ -648,9 +444,6 @@ class FileManager:
         return ranked_results
 
     def search_file(self, filename: str, root_dir: str = None, limit: int = 5, extensions: list = None, target_dir: str = None, date_filter: str = None, sort_by: str = None) -> list:
-        """
-        Searches for a file or folder using fuzzy matching and multiple search providers.
-        """
         logger.info(f"Searching for item '{filename}'...")
         self.start_background_indexer()
         
@@ -658,55 +451,124 @@ class FileManager:
         search_keyword = parsed["clean_query"] if parsed["clean_query"] else filename
         search_exts = extensions if extensions else parsed["extensions"]
         search_dir = root_dir if root_dir else (target_dir if target_dir else parsed["target_dir"])
+        if search_dir and re.match(r'^[a-zA-Z]:$', search_dir.strip()):
+            search_dir = search_dir.strip() + '\\'
         search_date = date_filter if date_filter else parsed["date_filter"]
         search_sort = sort_by if sort_by else parsed["sort_by"]
         
-        # 1. Try Windows Search Index (instant, PC-wide)
-        results = self._search_windows_index(
-            filename=search_keyword,
-            extensions=search_exts,
-            target_dir=search_dir,
-            date_filter=search_date,
-            limit=100
-        )
+        variants = self.generate_query_variants(search_keyword)
+        # Adaptively cap variants based on query length/complexity
+        if len(search_keyword.split()) > 3:
+            variants = variants[:5]
+        else:
+            variants = variants[:12]
+            
+        results = []
+        source_metadata = {}
         
-        # 2. Try Everything SDK (DLL search)
-        if not results:
-            results = self._search_everything(search_keyword, limit=100)
+        # 1. Try Windows Search Index, Everything SDK, Local SQLite cache
+        from concurrent.futures import ThreadPoolExecutor
+        
+        for provider in [self.provider_search.search_windows_index, self.provider_search.search_everything, self._search_sqlite_cache]:
+            provider_results = []
             
-        # 3. Try Local SQLite cache (background indexed files)
-        if not results:
-            results = self._search_sqlite_cache(
-                filename=search_keyword,
-                extensions=search_exts,
-                target_dir=search_dir,
-                date_filter=search_date,
-                limit=100
-            )
+            if provider == self.provider_search.search_everything:
+                # Everything SDK DLL is not thread-safe; query sequentially
+                for variant in variants:
+                    try:
+                        res = provider(filename=variant, extensions=search_exts, target_dir=search_dir, date_filter=search_date, limit=100)
+                        if res:
+                            for r in res:
+                                if r not in provider_results:
+                                    provider_results.append(r)
+                            # Short-circuit: exact filename match found
+                            if any(
+                                os.path.splitext(os.path.basename(r))[0].lower() == variant.lower()
+                                for r in res
+                            ):
+                                logger.info(f"Exact filename match on variant '{variant}'; stopping variant loop.")
+                                break
+                    except Exception as e:
+                        logger.debug(f"Everything SDK variant search failed: {e}")
+            else:
+                # Windows Index and SQLite cache are thread-safe or locked; query concurrently
+                with ThreadPoolExecutor(max_workers=min(len(variants), 8)) as executor:
+                    futures = {
+                        executor.submit(
+                            provider,
+                            filename=variant,
+                            extensions=search_exts,
+                            target_dir=search_dir,
+                            date_filter=search_date,
+                            limit=100
+                        ): variant for variant in variants
+                    }
+                    for future in futures:
+                        try:
+                            res = future.result()
+                            if res:
+                                for r in res:
+                                    if r not in provider_results:
+                                        provider_results.append(r)
+                        except Exception as e:
+                            logger.debug(f"Provider search variant failed: {e}")
             
-        # 4. Fallback to Threaded Scanning
+            if provider_results:
+                for r in provider_results:
+                    if r not in results:
+                        results.append(r)
+                        source_metadata[r] = {"source": "index", "alias_confidence": 0.0}
+                
+                # Dynamic early exit check
+                provider_ranked = self._rank_results(paths=provider_results, keyword=search_keyword, extensions=search_exts, sort_by=search_sort, source_metadata=source_metadata)
+                if provider_ranked and provider_ranked[0][0] > 85.0:
+                    logger.info(f"Confident match found (score {provider_ranked[0][0]:.1f}); exiting provider loop early.")
+                    break
+        
+        # 2. Fuzzy sweep if nothing matched
         if not results:
-            results = self._search_threaded_scan(
-                filename=search_keyword,
-                root_dir=search_dir,
-                extensions=search_exts,
-                limit=100
-            )
+            from rapidfuzz import process, fuzz
+            all_cache_files = self.db.get_all_filenames(target_dir=search_dir, extensions=search_exts)
+            valid_paths = {f[0]: f[1] for f in all_cache_files}
+            if valid_paths:
+                extracted = process.extract(search_keyword, valid_paths, processor=lambda x: os.path.splitext(x.lower())[0], scorer=fuzz.WRatio, limit=50)
+                for match in extracted:
+                    if match[1] >= 60:
+                        results.append(match[2])
+                        source_metadata[match[2]] = {"source": "index", "alias_confidence": 0.0}
+        
+        # 3. Fallback to Threaded Scanning
+        if not results:
+            results = self._search_threaded_scan(variants=variants, root_dir=search_dir, limit=100, extensions=search_exts)
+            for r in results:
+                source_metadata[r] = {"source": "drive_scan", "alias_confidence": 0.0}
             
+        # 4. Terminal / CLI Fallback
+        if not results:
+            for variant in variants:
+                cli_res = self.provider_search.search_cli_fallback(variant, root_dir=search_dir)
+                if cli_res:
+                    for r in cli_res:
+                        if r not in results:
+                            results.append(r)
+                            source_metadata[r] = {"source": "terminal", "alias_confidence": 0.0}
+                    break
+                    
         # Rank results
-        ranked_results = self._rank_results(
-            paths=results,
-            keyword=search_keyword,
-            extensions=search_exts,
-            sort_by=search_sort
-        )
+        ranked_results = self._rank_results(paths=results, keyword=search_keyword, extensions=search_exts, sort_by=search_sort, source_metadata=source_metadata)
         
         final_paths = []
         for score, path in ranked_results:
             if os.path.exists(path):
                 final_paths.append(path)
                 
+        # Record outcome in learning engine
+        outcome = "success" if final_paths else "not_found"
+        best_match = final_paths[0] if final_paths else ""
+        self.learning_engine.record(filename, best_match, "search_pipeline", 85.0 if final_paths else 0.0, outcome=outcome)
+        
         return final_paths[:limit]
+
 
     def resolve_path(self, query: str) -> str:
         """
@@ -718,6 +580,8 @@ class FileManager:
         # Check cache
         if query in self._path_cache:
             cached_path = self._path_cache[query]
+            if cached_path is None:
+                return None
             if isinstance(cached_path, list):
                 valid_cached = [p for p in cached_path if os.path.exists(p)]
                 if len(valid_cached) == 1:
@@ -737,9 +601,29 @@ class FileManager:
         parsed = self.parse_nlp_query(query)
         search_keyword = parsed["clean_query"] if parsed["clean_query"] else query
         
-        # Search for candidates
-        results = self.search_file(query, limit=5)
+        # Direct check for target_dir + search_keyword if target drive/folder was parsed
+        if parsed.get("target_dir") and search_keyword:
+            candidate_path = os.path.normpath(os.path.join(parsed["target_dir"], search_keyword))
+            if os.path.exists(candidate_path):
+                self._path_cache[query] = candidate_path
+                self.log_file_access(candidate_path)
+                return candidate_path
+        
+        # Search for candidates using parsed filters
+        results = self.search_file(
+            search_keyword,
+            root_dir=parsed.get("target_dir"),
+            extensions=parsed.get("extensions"),
+            date_filter=parsed.get("date_filter"),
+            sort_by=parsed.get("sort_by"),
+            limit=5
+        )
         if not results:
+            # If target_dir was specified on a valid drive, return candidate path for creation/resolution
+            if parsed.get("target_dir") and search_keyword and os.path.exists(parsed["target_dir"]):
+                candidate_path = os.path.normpath(os.path.join(parsed["target_dir"], search_keyword))
+                return candidate_path
+            self._path_cache[query] = None
             return None
             
         # Detect ambiguity: if multiple files match target search and have same name
@@ -767,8 +651,21 @@ class FileManager:
     def create_file(self, path: str, content: str = ""):
         try:
             path = os.path.normpath(os.path.abspath(path))
-            if not is_safe_path(path):
+            if not self._security.is_safe_path(path):
                 return "Error: Security Policy blocks modification of protected system path."
+            
+            # Auto-format JSON content if applicable
+            if isinstance(content, str):
+                trimmed = content.strip()
+                if (trimmed.startswith("{") and trimmed.endswith("}")) or (trimmed.startswith("[") and trimmed.endswith("]")):
+                    try:
+                        import json
+                        parsed = json.loads(trimmed)
+                        if isinstance(parsed, (list, dict)):
+                            content = json.dumps(parsed, indent=2, ensure_ascii=False)
+                    except Exception:
+                        pass
+
             with self.lock_manager.lock('file', path):
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 with open(path, "w", encoding="utf-8") as f:
@@ -784,6 +681,8 @@ class FileManager:
     def read_file(self, path: str):
         try:
             path = os.path.normpath(os.path.abspath(path))
+            if not self._security.is_safe_path(path):
+                return "Error: Security Policy blocks reading of protected system path."
             with open(path, "r", encoding="utf-8") as f:
                 return f.read()
         except PermissionError:
@@ -798,7 +697,7 @@ class FileManager:
     def delete_item(self, path: str):
         try:
             path = os.path.normpath(os.path.abspath(path))
-            if not is_safe_path(path):
+            if not self._security.is_safe_path(path):
                 return "Error: Security Policy blocks deletion of protected system folder/file."
             if os.path.isdir(path):
                 return "Error: Path is a directory, not a file."
@@ -818,7 +717,7 @@ class FileManager:
             src = os.path.normpath(os.path.abspath(src))
             dest = os.path.normpath(os.path.abspath(dest))
             
-            if not is_safe_path(src) or not is_safe_path(dest):
+            if not self._security.is_safe_path(src) or not self._security.is_safe_path(dest):
                 return "Error: Security Policy blocks moving system folder/file."
                 
             if os.path.isdir(src):
@@ -870,7 +769,7 @@ class FileManager:
             src = os.path.normpath(os.path.abspath(src))
             dest = os.path.normpath(os.path.abspath(dest))
             
-            if not is_safe_path(src) or not is_safe_path(dest):
+            if not self._security.is_safe_path(src) or not self._security.is_safe_path(dest):
                 return "Error: Security Policy blocks copying to/from system directories."
                 
             if not os.path.exists(src):
@@ -896,7 +795,7 @@ class FileManager:
     def rename_item(self, src: str, new_name: str):
         try:
             src = os.path.normpath(os.path.abspath(src))
-            if not is_safe_path(src):
+            if not self._security.is_safe_path(src):
                 return "Error: Security Policy blocks modification of protected system folder/file."
                 
             if os.path.isdir(src):
@@ -907,7 +806,7 @@ class FileManager:
                 new_name += ext
                 
             dest = os.path.join(os.path.dirname(src), new_name)
-            if not is_safe_path(dest):
+            if not self._security.is_safe_path(dest):
                 return "Error: Security Policy blocks modification of protected system folder/file."
                 
             with self.lock_manager.lock_resources([('file', src), ('file', dest)]):
@@ -985,11 +884,23 @@ class FileManager:
             
         return False
 
-    def open_item(self, path: str):
+    def open_item(self, path: str, app_name: str = None):
         try:
             path = os.path.normpath(os.path.abspath(path))
-            self.log_file_access(path)
+            if not os.path.exists(path):
+                return f"Error: Path does not exist: {path}"
+            if not self._security.is_safe_path(path):
+                return "Error: Security Policy blocks opening of protected system path."
             
+            if app_name:
+                from modules.controls.app_controller import AppController
+                success = AppController().open_file_with_app(app_name, path)
+                if success:
+                    self.log_file_access(path)
+                    return True
+                else:
+                    return f"Failed to open '{path}' with {app_name}."
+
             # Focus existing window if open
             if self._focus_existing_window(path):
                 logger.info(f"Focused existing window for path: {path}")
@@ -998,9 +909,10 @@ class FileManager:
             if platform.system() == "Windows":
                 os.startfile(path)
             elif platform.system() == "Darwin":
-                subprocess.run(["/usr/bin/open", path], check=False)
+                subprocess.call(('open', path))
             else:
-                subprocess.run(["/usr/bin/xdg-open", path], check=False)
+                subprocess.call(('xdg-open', path))
+            self.log_file_access(path)
             logger.info(f"Opened item: {path}")
             return True
         except PermissionError:
@@ -1067,3 +979,21 @@ class FileManager:
         except Exception as e:
             logger.error(f"Failed to close item {path}: {e}")
             return False
+
+    def close(self):
+        if hasattr(self, 'learning_engine') and self.learning_engine:
+            try:
+                self.learning_engine.close()
+            except Exception as e:
+                logger.error(f"Failed to close learning_engine: {e}")
+        if hasattr(self, 'indexer') and self.indexer:
+            try:
+                self.indexer.stop_realtime_observer()
+            except Exception as e:
+                logger.error(f"Failed to stop indexer observer: {e}")
+        if hasattr(self, 'db') and self.db:
+            try:
+                self.db.close()
+            except Exception as e:
+                logger.error(f"Failed to close db: {e}")
+

@@ -11,6 +11,8 @@ import re
 from datetime import datetime
 from send2trash import send2trash
 from modules.filesystem.fs_utils import get_drives, is_safe_path, close_explorer_window
+from modules.security.manager import SecurityManager
+
 
 logger = logging.getLogger("JARVIS.FolderManager")
 
@@ -31,18 +33,23 @@ class FolderManager:
     4. Automatically launches cross-drive transfers in background threads.
 
     FLOW:
-    Caller -> list_directory() / create_folder() -> is_safe_path() -> SQLite updates / os filesystem -> Caller
+    Caller -> list_directory() / create_folder() -> SecurityManager().is_safe_path() -> SQLite updates / os filesystem -> Caller
     """
     def __init__(self, db_path: str = None, file_mgr = None):
         self.file_mgr = file_mgr
         if db_path is None:
             if file_mgr:
                 self.db_path = file_mgr.db_path
-                self._db_lock = file_mgr._db_lock
+                if hasattr(file_mgr, 'db') and hasattr(file_mgr.db, '_db_lock'):
+                    self._db_lock = file_mgr.db._db_lock
+                elif hasattr(file_mgr, '_db_lock'):
+                    self._db_lock = file_mgr._db_lock
+                else:
+                    self._db_lock = threading.Lock()
             else:
-                db_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "database")
-                os.makedirs(db_dir, exist_ok=True)
-                self.db_path = os.path.join(db_dir, "file_manager.db")
+                from config.settings import DATA_DIR
+                os.makedirs(DATA_DIR, exist_ok=True)
+                self.db_path = os.path.join(DATA_DIR, "file_manager.db")
                 self._db_lock = threading.Lock()
         else:
             self.db_path = db_path
@@ -59,7 +66,8 @@ class FolderManager:
                 filename = path # Fallback for drive roots
             timestamp = datetime.now().isoformat()
             with self._db_lock:
-                conn = sqlite3.connect(self.db_path)
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                conn.execute("PRAGMA busy_timeout=30000")
                 try:
                     conn.execute("""
                         INSERT INTO file_history (path, filename, open_count, last_opened)
@@ -81,7 +89,7 @@ class FolderManager:
     def create_folder(self, path: str):
         try:
             path = os.path.normpath(os.path.abspath(path))
-            if not is_safe_path(path):
+            if not SecurityManager().is_safe_path(path):
                 return "Error: Security Policy blocks modification of protected system folder."
             os.makedirs(path, exist_ok=True)
             self.log_folder_access(path)
@@ -109,7 +117,7 @@ class FolderManager:
     def delete_folder(self, path: str):
         try:
             path = os.path.normpath(os.path.abspath(path))
-            if not is_safe_path(path):
+            if not SecurityManager().is_safe_path(path):
                 return "Error: Security Policy blocks deletion of protected system folder."
             if not os.path.isdir(path):
                 return "Error: Path is not a directory."
@@ -128,7 +136,7 @@ class FolderManager:
             src = os.path.normpath(os.path.abspath(src))
             dest = os.path.normpath(os.path.abspath(dest))
             
-            if not is_safe_path(src) or not is_safe_path(dest):
+            if not SecurityManager().is_safe_path(src) or not SecurityManager().is_safe_path(dest):
                 return "Error: Security Policy blocks moving system folder."
                 
             if not os.path.isdir(src):
@@ -175,7 +183,7 @@ class FolderManager:
             src = os.path.normpath(os.path.abspath(src))
             dest = os.path.normpath(os.path.abspath(dest))
             
-            if not is_safe_path(src) or not is_safe_path(dest):
+            if not SecurityManager().is_safe_path(src) or not SecurityManager().is_safe_path(dest):
                 return "Error: Security Policy blocks copying system directories."
                 
             if not os.path.exists(src):
@@ -204,13 +212,13 @@ class FolderManager:
     def rename_folder(self, src: str, new_name: str):
         try:
             src = os.path.normpath(os.path.abspath(src))
-            if not is_safe_path(src):
+            if not SecurityManager().is_safe_path(src):
                 return "Error: Security Policy blocks modification of protected system folder."
             if not os.path.isdir(src):
                 return "Error: Source path is not a directory."
                 
             dest = os.path.join(os.path.dirname(src), new_name)
-            if not is_safe_path(dest):
+            if not SecurityManager().is_safe_path(dest):
                 return "Error: Security Policy blocks modification of protected system folder."
                 
             os.rename(src, dest)

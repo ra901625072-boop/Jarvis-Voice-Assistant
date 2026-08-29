@@ -44,23 +44,27 @@ class FSIndexEventHandler(FileSystemEventHandler):
             return None
 
     def on_created(self, event):
-        if self._should_ignore(event.src_path): return
+        if self._should_ignore(event.src_path):
+            return
         info = self._get_file_info(event.src_path)
         if info:
             self.db.save_cache_batch([info])
 
     def on_modified(self, event):
-        if self._should_ignore(event.src_path): return
+        if self._should_ignore(event.src_path):
+            return
         info = self._get_file_info(event.src_path)
         if info:
             self.db.save_cache_batch([info])
 
     def on_deleted(self, event):
-        if self._should_ignore(event.src_path): return
+        if self._should_ignore(event.src_path):
+            return
         self.db.remove_from_cache(os.path.normpath(event.src_path))
 
     def on_moved(self, event):
-        if self._should_ignore(event.src_path): return
+        if self._should_ignore(event.src_path):
+            return
         self.db.remove_from_cache(os.path.normpath(event.src_path))
         if not self._should_ignore(event.dest_path):
             info = self._get_file_info(event.dest_path)
@@ -92,19 +96,50 @@ class FSIndexer:
         self.monitored_paths = []
 
     def get_default_paths(self):
+        from modules.security.manager import SecurityManager
         root_paths = []
-        # Project root workspace
+        
+        # 1. Project root workspace
         workspace = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         root_paths.append(workspace)
         
-        # User key folders
+        # 2. User key folders (from environment)
+        key_folders = ["Pictures", "Downloads", "Documents", "Desktop", "Videos", "Projects"]
         user_profile = os.environ.get("USERPROFILE")
         if user_profile:
-            for folder in ["Documents", "Desktop", "Downloads"]:
+            for folder in key_folders:
                 folder_path = os.path.join(user_profile, folder)
                 if os.path.exists(folder_path):
                     root_paths.append(folder_path)
-        return root_paths
+                    
+        # 3. Key folders across all allowed drives
+        drives = SecurityManager._get_drives()
+        for drive in drives:
+            for folder in key_folders:
+                folder_path = os.path.join(drive, folder)
+                if os.path.exists(folder_path) and folder_path not in root_paths:
+                    root_paths.append(folder_path)
+
+        # 4. Top-N folders by access frequency from file_history
+        try:
+            history = self.db.get_history()
+            sorted_history = sorted(history.items(), key=lambda x: x[1]["count"], reverse=True)
+            for path, _ in sorted_history[:10]:
+                if os.path.isdir(path) and path not in root_paths:
+                    root_paths.append(path)
+                elif os.path.isfile(path):
+                    parent = os.path.dirname(path)
+                    if os.path.exists(parent) and parent not in root_paths:
+                        root_paths.append(parent)
+        except Exception as e:
+            logger.debug(f"Failed to load history for indexer paths: {e}")
+
+        unique_paths = []
+        for p in root_paths:
+            if p not in unique_paths:
+                unique_paths.append(p)
+                
+        return unique_paths
 
     def start_background_indexer(self, root_paths: list = None):
         if root_paths is None:
@@ -146,6 +181,13 @@ class FSIndexer:
             if batch:
                 self.db.save_cache_batch(batch)
                 batch = []
+                
+        # Prune stale records from the cache at scan completion
+        try:
+            self.db.prune_stale_cache()
+        except Exception as e:
+            logger.error(f"Failed to prune stale cache at scan end: {e}")
+            
         logger.info("Initial deep file index completed.")
 
     def start_realtime_observer(self, root_paths: list):

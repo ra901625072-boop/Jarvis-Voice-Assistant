@@ -1,13 +1,14 @@
 import uuid
-import time
 import logging
 import threading
 import queue
-import sqlite3
 import json
 import os
 from enum import Enum
 from datetime import datetime
+
+from modules.shared.thread_local_db import ThreadLocalDBs
+from config.settings import DATA_DIR
 
 logger = logging.getLogger("JARVIS.TaskManager")
 
@@ -32,7 +33,7 @@ class TaskContext:
         return task is not None and task.status == TaskStatus.CANCELLED
 
 class BackgroundTask:
-    def __init__(self, task_id: str, task_type: str, func, args=None, kwargs=None, max_retries: int = 0):
+    def __init__(self, task_id: str, task_type: str, func, args=None, kwargs=None, max_retries: int = 0, label: str = None, announce: bool = True, priority: str = "normal"):
         self.task_id = task_id
         self.task_type = task_type
         self.func = func
@@ -50,6 +51,10 @@ class BackgroundTask:
         
         self.max_retries = max_retries
         self.retry_count = 0
+        
+        self.label = label or f"{task_type.capitalize()} Task"
+        self.announce = announce
+        self.priority = priority
 
     def to_dict(self) -> dict:
         return {
@@ -62,7 +67,10 @@ class BackgroundTask:
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "error": self.error,
             "result": str(self.result) if self.result is not None else None,
-            "retry_count": self.retry_count
+            "retry_count": self.retry_count,
+            "label": self.label,
+            "announce": self.announce,
+            "priority": self.priority
         }
 
 class BackgroundTaskManager:
@@ -94,18 +102,16 @@ class BackgroundTaskManager:
         self.num_workers = num_workers
         
         if db_path is None:
-            db_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "database")
-            os.makedirs(db_dir, exist_ok=True)
-            db_path = os.path.join(db_dir, "tasks.db")
+            os.makedirs(DATA_DIR, exist_ok=True)
+            db_path = os.path.join(DATA_DIR, "tasks.db")
         self.db_path = db_path
+        self._db = ThreadLocalDBs(self.db_path)
         self._init_db()
 
     def _init_db(self):
         with self.lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._db.get_conn()
             try:
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("PRAGMA synchronous=NORMAL")
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS tasks (
                         task_id TEXT PRIMARY KEY,
@@ -123,14 +129,18 @@ class BackgroundTaskManager:
                         retry_count INTEGER DEFAULT 0
                     )
                 """)
+                # Robust schema migration: Add new columns if they do not exist
+                for col_name, col_type in [("label", "TEXT"), ("announce", "INTEGER DEFAULT 1"), ("priority", "TEXT DEFAULT 'normal'")]:
+                    try:
+                        conn.execute(f"ALTER TABLE tasks ADD COLUMN {col_name} {col_type}")
+                    except Exception:
+                        pass
                 conn.commit()
             except Exception as e:
                 logger.error(f"Failed to initialize tasks database: {e}")
-            finally:
-                conn.close()
 
     def _db_save_task(self, task: BackgroundTask):
-        conn = sqlite3.connect(self.db_path)
+        conn = self._db.get_conn()
         try:
             try:
                 serialized_result = json.dumps(task.result)
@@ -139,8 +149,8 @@ class BackgroundTaskManager:
                 
             conn.execute("""
                 INSERT OR REPLACE INTO tasks (
-                    task_id, task_type, status, progress, created_at, started_at, finished_at, error, result, args, kwargs, max_retries, retry_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    task_id, task_type, status, progress, created_at, started_at, finished_at, error, result, args, kwargs, max_retries, retry_count, label, announce, priority
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 task.task_id,
                 task.task_type,
@@ -154,16 +164,35 @@ class BackgroundTaskManager:
                 json.dumps(task.args),
                 json.dumps(task.kwargs),
                 task.max_retries,
-                task.retry_count
+                task.retry_count,
+                task.label,
+                1 if task.announce else 0,
+                task.priority
             ))
             conn.commit()
         except Exception as e:
             logger.error(f"Failed to save task {task.task_id} to database: {e}")
-        finally:
-            conn.close()
+
+        # Publish state transition to TaskEventBus
+        try:
+            from modules.task.events import task_event_bus
+            event = {
+                "task_id": task.task_id,
+                "task_type": task.task_type,
+                "status": task.status.value,
+                "progress": task.progress,
+                "label": task.label,
+                "announce": task.announce,
+                "priority": task.priority,
+                "error": task.error,
+                "timestamp": datetime.now().timestamp()
+            }
+            task_event_bus.publish(event)
+        except Exception as ex:
+            logger.debug(f"Failed to publish event to TaskEventBus: {ex}")
 
     def _restore_pending_tasks(self):
-        conn = sqlite3.connect(self.db_path)
+        conn = self._db.get_conn()
         restored_count = 0
         try:
             cursor = conn.cursor()
@@ -188,7 +217,11 @@ class BackgroundTaskManager:
                 max_retries = data["max_retries"]
                 retry_count = data["retry_count"]
                 
-                task = BackgroundTask(task_id, task_type, func, args, kwargs, max_retries)
+                label = data.get("label")
+                announce = bool(data.get("announce", 1))
+                priority = data.get("priority", "normal")
+                
+                task = BackgroundTask(task_id, task_type, func, args, kwargs, max_retries, label=label, announce=announce, priority=priority)
                 task.retry_count = retry_count
                 task.created_at = datetime.fromisoformat(data["created_at"]) if data["created_at"] else datetime.now()
                 
@@ -202,8 +235,6 @@ class BackgroundTaskManager:
                 
         except Exception as e:
             logger.error(f"Failed to restore pending tasks from database: {e}")
-        finally:
-            conn.close()
             
         if restored_count > 0:
             logger.info(f"Restored {restored_count} pending/interrupted tasks from tasks.db")
@@ -227,7 +258,7 @@ class BackgroundTaskManager:
             self._restore_pending_tasks()
         logger.info("BackgroundTaskManager services started.")
 
-    def add_task(self, task_type: str, func=None, max_retries: int = 0, args=None, kwargs=None) -> str:
+    def add_task(self, task_type: str, func=None, max_retries: int = 0, args=None, kwargs=None, label: str = None, announce: bool = True, priority: str = "normal") -> str:
         if func:
             self.register_handler(task_type, func)
             
@@ -237,7 +268,7 @@ class BackgroundTaskManager:
                 raise ValueError(f"No handler registered for task type: '{task_type}'")
                 
             task_id = f"task_{uuid.uuid4().hex[:8]}"
-            task = BackgroundTask(task_id, task_type, handler, args, kwargs, max_retries)
+            task = BackgroundTask(task_id, task_type, handler, args, kwargs, max_retries, label=label, announce=announce, priority=priority)
             
             self.tasks[task_id] = task
             self._db_save_task(task)
@@ -251,7 +282,7 @@ class BackgroundTaskManager:
             return self.tasks.get(task_id)
 
     def get_all_tasks(self, limit: int = 50) -> list:
-        conn = sqlite3.connect(self.db_path)
+        conn = self._db.get_conn()
         try:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,))
@@ -267,8 +298,6 @@ class BackgroundTaskManager:
             logger.error(f"Failed to query tasks from database: {e}")
             with self.lock:
                 return [t.to_dict() for t in self.tasks.values()]
-        finally:
-            conn.close()
 
     def cancel_task(self, task_id: str) -> bool:
         with self.lock:
@@ -296,6 +325,7 @@ class BackgroundTaskManager:
             self.queue.put(None)
         for t in self.workers:
             t.join(timeout=1.0)
+        self._db.clear()
         logger.info("BackgroundTaskManager shut down.")
 
     def _worker_loop(self):
@@ -325,36 +355,7 @@ class BackgroundTaskManager:
             context = TaskContext(self, task_id)
             
             try:
-                celery_enabled = os.environ.get("JARVIS_CELERY_ENABLED", "false").lower() == "true"
-                if celery_enabled and task.task_type in ("skill_task", "tool_task", "nl_command"):
-                    logger.info(f"Dispatching task {task_id} of type '{task.task_type}' to Celery workers.")
-                    from tasks.task_registry import CeleryTaskRegistry
-                    
-                    tool_name = task.kwargs.get("tool_name", "nl_command_executor")
-                    action_name = task.kwargs.get("action_name", "process")
-                    tool_args = task.kwargs.get("args", task.kwargs)
-                    
-                    celery_task = CeleryTaskRegistry.dispatch_to_celery(tool_name, action_name, tool_args)
-                    
-                    # Wait for Celery task result and update progress
-                    # In a production setup, we check state in a loop
-                    import time
-                    while not celery_task.ready():
-                        if task.status == TaskStatus.CANCELLED:
-                            celery_task.revoke(terminate=True)
-                            break
-                        # Update task progress periodically if celery offers state metadata
-                        # Mock progress update
-                        if task.progress < 90:
-                            context.update_progress(task.progress + 10)
-                        time.sleep(0.5)
-                        
-                    if celery_task.successful():
-                        result = celery_task.get()
-                    else:
-                        raise celery_task.result if celery_task.result else RuntimeError("Celery task execution failed.")
-                else:
-                    result = task.func(context, *task.args, **task.kwargs)
+                result = task.func(context, *task.args, **task.kwargs)
                 
                 with self.lock:
                     if task.status == TaskStatus.CANCELLED:

@@ -1,10 +1,8 @@
 import os
-import io
 import time
 import logging
 import asyncio
 from typing import Optional
-from PIL import Image
 from google import genai
 from google.genai import types
 
@@ -16,6 +14,7 @@ from .screen_capture import ScreenCapturer
 from .image_optimizer import optimize_image
 from .vision_cache import VisionCache
 from .openrouter_vision import OpenRouterVisionClient
+from config.settings import DEFAULT_GEMINI_MODEL, GEMINI_FALLBACK_CHAIN
 
 logger = logging.getLogger("JARVIS.VisionManager")
 
@@ -24,17 +23,20 @@ class VisionRateLimiter:
     Rate limiter to prevent excessive screenshot queries and loop spamming.
     """
     def __init__(self, max_calls: int = 10, period: float = 60.0):
+        import threading
         self.max_calls = max_calls
         self.period = period
         self.calls = []
+        self._lock = threading.Lock()
 
     def acquire(self) -> bool:
-        now = time.time()
-        self.calls = [t for t in self.calls if now - t < self.period]
-        if len(self.calls) >= self.max_calls:
-            return False
-        self.calls.append(now)
-        return True
+        with self._lock:
+            now = time.time()
+            self.calls = [t for t in self.calls if now - t < self.period]
+            if len(self.calls) >= self.max_calls:
+                return False
+            self.calls.append(now)
+            return True
 
 class VisionManager:
     """
@@ -87,7 +89,7 @@ class VisionManager:
 
     def _generate_gemini_vision(self, image_bytes: bytes, prompt: str) -> str:
         """
-        Calls Gemini 2.5 Flash Vision model using the generated image bytes.
+        Calls Gemini Vision model using the generated image bytes, with model rotation fallback.
         """
         if not self.client:
             raise ValueError("Gemini client is not initialized.")
@@ -95,36 +97,52 @@ class VisionManager:
         image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
         text_part = types.Part.from_text(text=prompt)
         
-        response = self.client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[image_part, text_part],
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                max_output_tokens=800,
-            )
-        )
-        if response and response.text:
-            return response.text.strip()
-        raise ValueError("Empty response text from Gemini Vision.")
+        models_to_try = GEMINI_FALLBACK_CHAIN
+        last_err = None
+        
+        for model in models_to_try:
+            try:
+                response = self.client.models.generate_content(
+                    model=model,
+                    contents=[image_part, text_part],
+                    config=types.GenerateContentConfig(
+                        temperature=0.2,
+                        max_output_tokens=800,
+                    )
+                )
+                if response and response.text:
+                    return response.text.strip()
+                last_err = "Empty response from Gemini Vision."
+            except Exception as e:
+                last_err = str(e)
+                logger.warning(f"VisionManager: Vision model '{model}' failed ({last_err[:80]}). Retrying next model...")
+                continue
+        raise ValueError(f"All vision models failed. Last error: {last_err}")
 
     def _generate_gemini_text(self, prompt: str) -> str:
         """
-        Calls text-only Gemini 2.5 Flash for the OCR fast path.
+        Calls text-only Gemini for the OCR fast path.
         """
         if not self.client:
             raise ValueError("Gemini client is not initialized.")
         
-        response = self.client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                max_output_tokens=800,
-            )
-        )
-        if response and response.text:
-            return response.text.strip()
-        raise ValueError("Empty response text from Gemini.")
+        last_err = None
+        for model in GEMINI_FALLBACK_CHAIN:
+            try:
+                response = self.client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.2,
+                        max_output_tokens=800,
+                    )
+                )
+                if response and response.text:
+                    return response.text.strip()
+            except Exception as e:
+                last_err = e
+                continue
+        raise ValueError(f"Empty response or all models failed from Gemini: {last_err}")
 
     async def analyze_screen(self, query: str, custom_prompt: Optional[str] = None) -> str:
         """
@@ -138,15 +156,44 @@ class VisionManager:
             return "Error: Screenshot query rate limit reached (max 10 requests per minute). Please wait before trying again."
 
         async with self._semaphore:
-            # 2. Window Detection & Crop (Target active window)
-            win_info = self.window_detector.get_active_window_info()
-            region = win_info.get("rect")
-            app_name = win_info.get("active_app", "Desktop")
+            # 2. Window Detection / Browser page check
+            from container import ServiceContainer
+            container = ServiceContainer.instance()
+            browser_page = None
+            if container:
+                tools = container.get_or_none("tools")
+                if tools:
+                    for tool in tools:
+                        if type(tool).__name__ == "BrowserTools":
+                            browser_ctrl = getattr(tool, "browser_ctrl", None)
+                            if browser_ctrl and browser_ctrl.page:
+                                page = browser_ctrl.page
+                                try:
+                                    if not page.is_closed() and page.url != "about:blank":
+                                        browser_page = page
+                                except Exception:
+                                    pass
+                            break
 
-            # 3. Capture Screen/Region (Runs in executor to avoid blocking loop)
+            # 3. Capture Screen/Region or Browser Page
             loop = asyncio.get_running_loop()
-            img = await loop.run_in_executor(None, self.capturer.capture, region)
-            t_capture = time.perf_counter()
+            if browser_page:
+                try:
+                    logger.info(f"Capturing browser page screenshot directly for URL: {browser_page.url}")
+                    screenshot_bytes = await browser_page.screenshot(type="jpeg", quality=90)
+                    import io
+                    from PIL import Image
+                    img = Image.open(io.BytesIO(screenshot_bytes))
+                    t_capture = time.perf_counter()
+                except Exception as e:
+                    logger.warning(f"Failed to capture browser page screenshot directly: {e}. Falling back to OS screen capture.")
+                    browser_page = None
+
+            if not browser_page:
+                win_info = self.window_detector.get_active_window_info()
+                region = win_info.get("rect")
+                img = await loop.run_in_executor(None, self.capturer.capture, region)
+                t_capture = time.perf_counter()
 
             # 4. Image Compression & Hash Generation
             base64_image = await loop.run_in_executor(None, optimize_image, img)
@@ -196,56 +243,60 @@ class VisionManager:
                 except Exception as e:
                     logger.warning(f"OCR Fast Path LLM call failed: {e}. Falling back to Vision Model.")
 
-            VISION_TIMEOUT = 8.0
+            VISION_TIMEOUT = 20.0
             if not vision_result:
-                # Primary: Gemini 2.5 Flash Vision Model
-                try:
-                    vision_result = await asyncio.wait_for(
-                        loop.run_in_executor(None, self._generate_gemini_vision, image_bytes, prompt),
-                        timeout=VISION_TIMEOUT
-                    )
-                    logger.info("Successfully answered via primary Gemini Vision model.")
-                except asyncio.TimeoutError:
-                    logger.warning("Gemini Vision timed out. Trying fallback...")
-                    vision_result = None
-                except Exception as e:
-                    # Fallback: OpenRouter Qwen-VL model
-                    logger.warning(f"Primary Gemini Vision failed: {e}. Attempting OpenRouter Qwen fallback...")
-                    vision_result = None
-                    
-                if not vision_result:
+                # Primary: OpenRouter Qwen 2.5 VL (via OpenRouter API)
+                openrouter_key = os.getenv("OPENROUTER_API_KEY")
+                if openrouter_key:
                     try:
                         fallback_result = await asyncio.wait_for(
                             loop.run_in_executor(
                                 None, 
                                 self.openrouter_client.analyze_image, 
                                 base64_image, 
-                                prompt
+                                prompt,
+                                "qwen/qwen2.5-vl-72b-instruct",
+                                450
                             ),
                             timeout=VISION_TIMEOUT
                         )
-                        
                         if fallback_result and not fallback_result.startswith("Error:"):
-                            vision_result = f"[Note: response via backup vision model, may be lower accuracy]\n{fallback_result}"
-                            logger.info("Successfully answered via OpenRouter Qwen fallback.")
-                        else:
-                            vision_result = "VISION_UNAVAILABLE: Both vision models failed due to API quota/rate limits. Do NOT describe or guess screen content. Inform the user the vision system is temporarily unavailable."
+                            vision_result = fallback_result
+                            logger.info("Successfully answered via primary OpenRouter Qwen-VL model.")
                     except asyncio.TimeoutError:
-                        vision_result = "VISION_UNAVAILABLE: Vision analysis timed out. Please try again in a moment."
+                        logger.warning("OpenRouter Qwen-VL timed out. Trying fallback...")
                     except Exception as e:
-                        vision_result = "VISION_UNAVAILABLE: Both vision models failed due to API quota/rate limits. Do NOT describe or guess screen content. Inform the user the vision system is temporarily unavailable."
+                        logger.warning(f"Primary OpenRouter Qwen-VL failed: {e}. Trying fallback...")
+
+                # Fallback: Gemini 2.5 Flash Vision Model
+                if not vision_result and self.client:
+                    try:
+                        fallback_result = await asyncio.wait_for(
+                            loop.run_in_executor(None, self._generate_gemini_vision, image_bytes, prompt),
+                            timeout=VISION_TIMEOUT
+                        )
+                        if fallback_result and not fallback_result.startswith("Error:"):
+                            vision_result = f"[Note: response via backup vision model, may be lower accuracy]\n{fallback_result}" if openrouter_key else fallback_result
+                            logger.info("Successfully answered via fallback Gemini Vision model.")
+                    except asyncio.TimeoutError:
+                        logger.warning("Gemini Vision timed out.")
+                    except Exception as e:
+                        logger.error(f"Fallback Gemini Vision failed: {e}")
+
+                if not vision_result:
+                    vision_result = "VISION_UNAVAILABLE: Both vision models failed due to API quota/rate limits. Do NOT describe or guess screen content. Inform the user the vision system is temporarily unavailable."
 
             # Write result to Cache
-            if vision_result and not vision_result.startswith("Error:"):
+            if vision_result and not vision_result.startswith("Error:") and not vision_result.startswith("VISION_UNAVAILABLE"):
                 self.cache.set(image_hash, vision_result)
 
             # Metrics profiling log
             total_time_ms = int((time.perf_counter() - t_start) * 1000)
-            logger.info(f"=== JARVIS VISION METRICS ===")
+            logger.info("=== JARVIS VISION METRICS ===")
             logger.info(f"Capture Time: {int((t_capture - t_start) * 1000)}ms")
             logger.info(f"Compression/Hash Time: {int((t_compress - t_capture) * 1000)}ms")
             logger.info(f"Total Process Latency: {total_time_ms}ms")
-            logger.info(f"=====================================")
+            logger.info("=====================================")
 
             return str(vision_result)
 

@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any, List
+from typing import List
 
 logger = logging.getLogger("JARVIS.ToolRouter")
 
@@ -32,7 +32,7 @@ class ToolRouter:
             "ui_click": ["pyautogui_click", "vision_click"]
         }
         
-    def get_optimal_tool(self, capability: str) -> str:
+    def get_optimal_tool(self, capability: str, context_tag: str = "general") -> str:
         """
         Given a generic capability like 'web_search', returns the most reliable specific tool.
         If the requested capability isn't a known group, returns the capability itself.
@@ -47,10 +47,10 @@ class ToolRouter:
         best_score = -1.0
         
         for tool in candidates:
-            stats = self.tool_memory.get_tool_stats(tool)
+            stats = self.tool_memory.get_tool_stats(tool, context_tag)
             # Default to 0.5 reliability for unknown tools to give them a chance
             if stats and (stats['success_count'] + stats['fail_count']) > 0:
-                score = self.tool_memory.get_reliability(tool)
+                score = self.tool_memory.get_reliability(tool, context_tag)
             else:
                 score = 0.5
                 
@@ -58,16 +58,16 @@ class ToolRouter:
                 best_score = score
                 best_tool = tool
                 
-        logger.info(f"ToolRouter routed '{capability}' -> '{best_tool}' (reliability: {best_score:.2f})")
+        logger.info(f"ToolRouter routed '{capability}' -> '{best_tool}' (reliability: {best_score:.2f}, context: {context_tag})")
         return best_tool
 
-    async def route_async(self, capability: str) -> str:
+    async def route_async(self, capability: str, context_tag: str = "general") -> str:
         """Asynchronously routes a generic capability request to the most reliable tool."""
         import asyncio
-        return await asyncio.to_thread(self.get_optimal_tool, capability)
+        return await asyncio.to_thread(self.get_optimal_tool, capability, context_tag)
 
-    async def route_multiple_async(self, capabilities: List[str]) -> List[str]:
+    async def route_multiple_async(self, capabilities: List[str], context_tag: str = "general") -> List[str]:
         """Asynchronously routes multiple generic capability requests simultaneously."""
         import asyncio
-        tasks = [self.route_async(cap) for cap in capabilities]
+        tasks = [self.route_async(cap, context_tag) for cap in capabilities]
         return await asyncio.gather(*tasks)

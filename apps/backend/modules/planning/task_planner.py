@@ -1,12 +1,13 @@
 import logging
 import json
 import time
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 from livekit.agents import llm
-from modules.core.state_manager import AgentStateManager, SubTask, AgentState
-from modules.core.memory_manager import MemoryManager
+from modules.task.state_manager import AgentStateManager, SubTask, AgentState
+from modules.memory.manager import MemoryManager
 from modules.execution.tool_router import ToolRouter
 from modules.execution.success_patterns import SuccessLearner
+from ai.agents.types import AgentTask
 
 logger = logging.getLogger("JARVIS.TaskPlanner")
 
@@ -40,165 +41,54 @@ class TaskPlannerTools(llm.Toolset):
     @llm.function_tool(description="Prepare for planning by retrieving past workflows, known tool risks, and lessons learned for a specific goal. ALWAYS call this before create_plan.")
     async def get_execution_context(self, goal: str) -> str:
         self.state_manager.set_agent_state(AgentState.PLANNING)
-        if not self.coordinator:
+        from container import ServiceContainer
+        bus = ServiceContainer.instance().get_or_none("agent_bus")
+        if not bus:
             return "Cognitive Coordinator is not available."
-        return self.coordinator.generate_execution_context(goal)
+        import uuid
+        task = AgentTask(
+            task_id=str(uuid.uuid4()),
+            task_type="generate_context",
+            payload={"goal": goal},
+            origin_agent="planning_agent",
+            target_agent="coordinator_agent"
+        )
+        res = await bus.dispatch(task)
+        if res.success:
+            return res.result.get("context", "")
+        else:
+            return f"Error generating context: {res.error}"
 
     def match_static_intent(self, goal: str) -> Optional[List[SubTask]]:
-        import re
-        goal_lower = goal.strip().lower()
-        
-        # 1. System volume controls
-        if goal_lower in ("mute", "mute audio", "mute system", "mute volume"):
-            return [SubTask(
-                description="Mute system audio",
-                task_id=1,
-                tool_name="mute_audio",
-                args={}
-            )]
-        if goal_lower in ("unmute", "unmute audio", "unmute system", "unmute volume"):
-            return [SubTask(
-                description="Unmute system audio",
-                task_id=1,
-                tool_name="unmute_audio",
-                args={}
-            )]
-        vol_match = re.match(r'^(?:set|change)?\s*(?:system\s+)?volume\s+(?:to\s+)?(\d+)%?$', goal_lower)
-        if vol_match:
-            try:
-                level = int(vol_match.group(1))
-                if 0 <= level <= 100:
-                    return [SubTask(
-                        description=f"Set system volume to {level}%",
-                        task_id=1,
-                        tool_name="set_volume",
-                        args={"level": level}
-                    )]
-            except ValueError:
-                pass
-                
-        # 2. Display brightness
-        bright_match = re.match(r'^(?:set|change)?\s*(?:display\s+)?brightness\s+(?:to\s+)?(\d+)%?$', goal_lower)
-        if bright_match:
-            try:
-                level = int(bright_match.group(1))
-                if 0 <= level <= 100:
-                    return [SubTask(
-                        description=f"Set display brightness to {level}%",
-                        task_id=1,
-                        tool_name="set_brightness",
-                        args={"level": level}
-                    )]
-            except ValueError:
-                pass
-
-        # 3. Take screenshot
-        if goal_lower in ("take screenshot", "screenshot", "capture screen"):
-            return [SubTask(
-                description="Take system screenshot",
-                task_id=1,
-                tool_name="take_screenshot",
-                args={}
-            )]
-
-        # 4. Open Settings
-        if goal_lower in ("open settings", "launch settings", "settings"):
-            return [SubTask(
-                description="Open system settings",
-                task_id=1,
-                tool_name="open_settings",
-                args={}
-            )]
-
-        # 5. Open Web URLs
-        url_match = re.match(r'^(?:open|visit|go\s+to)\s+(https?://[^\s]+|[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s]*)?)$', goal_lower)
-        if url_match:
-            url_str = url_match.group(1).strip()
-            # Canonicalize url
-            if url_str in ("google", "google.com"):
-                url = "https://www.google.com"
-            elif url_str in ("youtube", "youtube.com"):
-                url = "https://www.youtube.com"
-            elif url_str in ("github", "github.com"):
-                url = "https://github.com"
-            elif url_str in ("wikipedia", "wikipedia.org"):
-                url = "https://www.wikipedia.org"
-            else:
-                url = url_str if url_str.startswith(("http://", "https://")) else f"https://{url_str}"
-            return [SubTask(
-                description=f"Open URL: {url}",
-                task_id=1,
-                tool_name="open_url",
-                args={"url": url},
-                verify_condition_type="url_reachable",
-                verify_target=url
-            )]
-
-        # Simple name-only URLs (e.g. "open google", "open youtube")
-        for name, url in [("google", "https://www.google.com"), 
-                          ("youtube", "https://www.youtube.com"), 
-                          ("github", "https://github.com"), 
-                          ("wikipedia", "https://www.wikipedia.org")]:
-            if goal_lower == f"open {name}":
-                return [SubTask(
-                    description=f"Open URL: {url}",
-                    task_id=1,
-                    tool_name="open_url",
-                    args={"url": url},
-                    verify_condition_type="url_reachable",
-                    verify_target=url
-                )]
-
-        # 6. YouTube video playback
-        yt_match = re.match(r'^(?:play|watch)\s+(.+)\s+on\s+youtube$', goal_lower)
-        if not yt_match:
-            yt_match = re.match(r'^(?:play|watch)\s+youtube\s+for\s+(.+)$', goal_lower)
-        if not yt_match:
-            yt_match = re.match(r'^youtube\s+(?:play|watch)\s+(.+)$', goal_lower)
-        if yt_match:
-            query = yt_match.group(1).strip()
-            return [SubTask(
-                description=f"Play YouTube video for: {query}",
-                task_id=1,
-                tool_name="play_youtube",
-                args={"query": query}
-            )]
-
-        # 7. Search Google
-        search_match = re.match(r'^(?:search\s+google\s+for|search\s+for|google)\s+(.+)$', goal_lower)
-        if search_match:
-            query = search_match.group(1).strip()
-            return [SubTask(
-                description=f"Search Google for: {query}",
-                task_id=1,
-                tool_name="search_google",
-                args={"query": query}
-            )]
-
-        # 8. Open Application
-        app_match = re.match(r'^(?:open|launch|start|run)\s+([a-zA-Z0-9\s_-]+)$', goal_lower)
-        if app_match:
-            app_name = app_match.group(1).strip()
-            # Alias resolution
-            if app_name in ("google chrome", "chrome browser"):
-                app_name = "chrome"
-            elif app_name in ("command prompt", "cmd prompt"):
-                app_name = "cmd"
-            elif app_name in ("ms edge", "microsoft edge"):
-                app_name = "edge"
-                
-            return [SubTask(
-                description=f"Open {app_name}",
-                task_id=1,
-                tool_name="open_application",
-                args={"app_name": app_name},
-                verify_condition_type="process_running",
-                verify_target=app_name
-            )]
-            
+        """Matches static single-step deterministic intents using TaskClassifier."""
+        from modules.routing.task_classifier import TaskClassifier
+        report = TaskClassifier.classify(goal)
+        if report.fast_subtasks:
+            subtasks = []
+            for st in report.fast_subtasks:
+                subtasks.append(SubTask(
+                    description=st.get("description", goal),
+                    task_id=st.get("id", 1),
+                    tool_name=st.get("tool_name"),
+                    args=st.get("args", {}),
+                    dependencies=st.get("dependencies", []),
+                    verify_condition_type=st.get("verify_condition_type"),
+                    verify_target=st.get("verify_target"),
+                ))
+            return subtasks
         return None
 
-    @llm.function_tool(description="Create a step-by-step plan for a goal. For common commands (e.g. open chrome, open notepad, set volume to X, increase volume, decrease volume, set brightness to X, open youtube, etc.), you can omit subtasks_json and pass only the goal.")
+    @llm.function_tool(
+        description=(
+            "Create a step-by-step plan for a goal. For common commands (e.g., set volume, open notepad), "
+            "you can omit subtasks_json. For complex multi-step goals, subtasks_json is REQUIRED and "
+            "MUST be a JSON array of objects representing steps. Each step object MUST contain: "
+            "'id' (int), 'task' (string description), 'tool_name' (string name of the exact tool to run, "
+            "e.g., 'open_url', 'automate_desktop_flow', 'search_google'), and 'args' (dict of arguments for that tool, "
+            "e.g., {'url': 'https://example.com'} or {'goal': 'analyze page text'}). "
+            "Specify dependencies using 'depends_on' (list of dependent step IDs)."
+        )
+    )
     async def create_plan(self, goal: str, subtasks_json: Optional[str] = None) -> str:
         """
         subtasks_json should be a JSON array of objects with dependencies.
@@ -216,17 +106,24 @@ class TaskPlannerTools(llm.Toolset):
                 eval_warning = "Static template matched (safe plan)."
             else:
                 if not subtasks_json:
-                    return "Error: subtasks_json is required for custom goals that do not match a static template."
-                tasks_list = json.loads(subtasks_json)
-                if not isinstance(tasks_list, list):
-                    return "Error: subtasks_json must be a JSON array."
+                    subtasks = [SubTask(description=goal, task_id=1)]
+                    eval_warning = "Dynamic plan fallback (single-step goal)."
+                else:
+                    tasks_list = json.loads(subtasks_json)
+                    if not isinstance(tasks_list, list):
+                        return "Error: subtasks_json must be a JSON array."
                     
                 for i, item in enumerate(tasks_list):
                     if isinstance(item, str):
-                        subtasks.append(SubTask(description=item, task_id=i+1))
+                        desc = item
+                        if not desc or desc.strip().lower() in ("unknown task", "", "none", "null"):
+                            return f"Error: Invalid subtask description '{desc}' in plan step {i+1}."
+                        subtasks.append(SubTask(description=desc, task_id=i+1))
                     elif isinstance(item, dict):
                         task_id = item.get("id", i+1)
-                        desc = item.get("task", item.get("description", "Unknown task"))
+                        desc = item.get("task", item.get("description")) or ""
+                        if not desc or desc.strip().lower() in ("unknown task", "", "none", "null"):
+                            return f"Error: Invalid subtask description '{desc}' in plan step {i+1}."
                         deps = item.get("depends_on", [])
                         tool_name = item.get("tool_name", item.get("tool"))
                         tool_args = item.get("args", item.get("arguments", item.get("params", {})))
@@ -250,8 +147,23 @@ class TaskPlannerTools(llm.Toolset):
 
                 # Evaluate plan via coordinator
                 eval_warning = "Plan accepted."
-                if self.coordinator:
-                    eval_warning = self.coordinator.evaluate_plan(goal, [t.description for t in subtasks])
+                from container import ServiceContainer
+                bus = ServiceContainer.instance().get_or_none("agent_bus")
+                if bus:
+                    import uuid
+                    eval_task = AgentTask(
+                        task_id=str(uuid.uuid4()),
+                        task_type="evaluate_plan",
+                        payload={
+                            "goal": goal,
+                            "plan_descriptions": [t.description for t in subtasks]
+                        },
+                        origin_agent="planning_agent",
+                        target_agent="coordinator_agent"
+                    )
+                    eval_res = await bus.dispatch(eval_task)
+                    if eval_res.success:
+                        eval_warning = eval_res.result.get("evaluation", "Plan accepted.")
                     
             self.state_manager.set_plan(goal, subtasks)
             self._plan_start_time = time.time()  # start timing
@@ -400,26 +312,31 @@ class TaskPlannerTools(llm.Toolset):
 
         # Cognitive Coordinator Replanning & Recovery
         replan_directive = ""
-        if self.coordinator:
+        from container import ServiceContainer
+        bus = ServiceContainer.instance().get_or_none("agent_bus")
+        if bus:
             goal_str = self.state_manager.current_goal or "unknown"
-            
             self.state_manager.set_agent_state(AgentState.RECOVERING)
-            # First, attempt predefined deterministic recovery
-            recovery_directive = self.coordinator.recovery_engine.attempt_recovery(
-                failed_task=active_task.description,
-                error_reason=error_reason
-            )
             
-            if recovery_directive:
-                replan_directive = f"--- DETERMINISTIC RECOVERY STRATEGY ---\n{recovery_directive}"
-            else:
-                self.state_manager.set_agent_state(AgentState.REPLANNING)
-                # Fallback to LLM cognitive failure analysis
-                replan_directive = self.coordinator.analyze_failure_and_replan(
-                    goal=goal_str,
-                    failed_task=active_task.description,
-                    error_reason=error_reason
-                )
+            import uuid
+            recovery_task = AgentTask(
+                task_id=str(uuid.uuid4()),
+                task_type="recover_failure",
+                payload={
+                    "goal": goal_str,
+                    "failed_task_description": active_task.description,
+                    "error_context": error_reason,
+                    "agent_id": "planning_agent",
+                    "task_type": "planning"
+                },
+                origin_agent="planning_agent",
+                target_agent="recovery_agent"
+            )
+            recovery_res = await bus.dispatch(recovery_task)
+            if recovery_res.success:
+                action = recovery_res.result.get("action", "escalate")
+                reason = recovery_res.result.get("reason", "")
+                replan_directive = f"Recovery Decision: {action.upper()}\nReason: {reason}"
 
         if self.memory:
             self.state_manager.persist_state(self.memory)
@@ -440,10 +357,32 @@ class TaskPlannerTools(llm.Toolset):
 
     @llm.function_tool(description="Analyze a failed task execution and get alternative strategies or past lessons for replanning.")
     async def analyze_and_replan(self, failed_task: str, error_reason: str) -> str:
-        if not self.coordinator:
+        from container import ServiceContainer
+        bus = ServiceContainer.instance().get_or_none("agent_bus")
+        if not bus:
             return "Cognitive Coordinator is not available."
         goal_str = self.state_manager.current_goal or "unknown"
-        return self.coordinator.analyze_failure_and_replan(goal_str, failed_task, error_reason)
+        import uuid
+        task = AgentTask(
+            task_id=str(uuid.uuid4()),
+            task_type="recover_failure",
+            payload={
+                "goal": goal_str,
+                "failed_task_description": failed_task,
+                "error_context": error_reason,
+                "agent_id": "planning_agent",
+                "task_type": "planning"
+            },
+            origin_agent="planning_agent",
+            target_agent="recovery_agent"
+        )
+        res = await bus.dispatch(task)
+        if res.success:
+            action = res.result.get("action", "escalate")
+            reason = res.result.get("reason", "")
+            return f"Recovery Decision: {action.upper()}\nReason: {reason}"
+        else:
+            return f"Error analyzing failure: {res.error}"
 
     @llm.function_tool(description="Check the success rate and performance stats for a type of goal JARVIS has run before.")
     async def get_workflow_reliability(self, goal_pattern: str) -> str:

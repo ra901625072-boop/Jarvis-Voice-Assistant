@@ -23,18 +23,22 @@ if API_KEY:
 else:
     client = None
 
+from .openrouter_vision import OpenRouterVisionClient
+openrouter_client = OpenRouterVisionClient()
+
 
 # =========================
 # Persistent Vision Cache & Rate Limiter
 # =========================
 
-_db_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "database")
-os.makedirs(_db_dir, exist_ok=True)
-_cache_db_path = os.path.join(_db_dir, "vision_cache.db")
+from config.settings import DATA_DIR, GEMINI_FALLBACK_CHAIN
+os.makedirs(DATA_DIR, exist_ok=True)
+_cache_db_path = os.path.join(DATA_DIR, "vision_cache.db")
 
 def _init_cache_db():
     try:
-        with sqlite3.connect(_cache_db_path) as conn:
+        with sqlite3.connect(_cache_db_path, timeout=30.0) as conn:
+            conn.execute("PRAGMA busy_timeout=30000")
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS cache (
@@ -50,7 +54,8 @@ _init_cache_db()
 
 def _get_cached_result(cache_key: str) -> str:
     try:
-        with sqlite3.connect(_cache_db_path) as conn:
+        with sqlite3.connect(_cache_db_path, timeout=30.0) as conn:
+            conn.execute("PRAGMA busy_timeout=30000")
             cursor = conn.execute("SELECT result FROM cache WHERE cache_key = ?", (cache_key,))
             row = cursor.fetchone()
             if row:
@@ -61,7 +66,8 @@ def _get_cached_result(cache_key: str) -> str:
 
 def _set_cached_result(cache_key: str, result: str):
     try:
-        with sqlite3.connect(_cache_db_path) as conn:
+        with sqlite3.connect(_cache_db_path, timeout=30.0) as conn:
+            conn.execute("PRAGMA busy_timeout=30000")
             conn.execute("INSERT OR REPLACE INTO cache (cache_key, result, created_at) VALUES (?, ?, ?)",
                          (cache_key, result, time.time()))
     except Exception as e:
@@ -135,8 +141,8 @@ def _generate_from_image(
     image_path can be a string file path or a PIL Image object.
     """
 
-    if not client:
-        return "Error: Vision tool requires GOOGLE_API_KEY or GEMINI_API_KEY to be set in .env"
+    if not client and not os.getenv("OPENROUTER_API_KEY"):
+        return "Error: Vision tool requires GOOGLE_API_KEY, GEMINI_API_KEY, or OPENROUTER_API_KEY to be set in .env"
 
     if screen_hash:
         cache_key = f"{screen_hash}_{prompt}"
@@ -169,39 +175,54 @@ def _generate_from_image(
         if not isinstance(image_path, Image.Image):
             pil_image.close()
 
-        image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
-        text_part  = types.Part.from_text(text=prompt)
+        # OpenRouter primary path
+        import base64
+        base64_image = base64.b64encode(image_bytes).decode("utf-8")
+        response_text = None
+        openrouter_key = os.getenv("OPENROUTER_API_KEY")
 
-        models_to_try = ["gemini-3.5-flash", "gemini-2.5-flash"]
-        response = None
-        last_error = None
-
-        for model_name in models_to_try:
+        if openrouter_key:
             try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=[image_part, text_part],
-                    config=types.GenerateContentConfig(
-                        temperature=temperature,
-                        max_output_tokens=max_tokens,
-                    ),
-                )
-                if response:
-                    logger.info(f"Successfully generated content using model: {model_name}")
-                    break
+                fallback_result = openrouter_client.analyze_image(base64_image, prompt, max_tokens=max_tokens)
+                if fallback_result and not fallback_result.startswith("Error:"):
+                    logger.info("Successfully generated content using OpenRouter Qwen-VL model.")
+                    response_text = fallback_result
             except Exception as e:
-                last_error = e
-                logger.warning(f"Failed to call vision model {model_name}: {e}. Trying fallback...")
+                logger.warning(f"Failed to call OpenRouter Vision API: {e}. Trying Gemini fallback...")
 
-        if not response:
-            if last_error:
-                raise last_error
-            raise RuntimeError("All vision models failed to respond")
+        # If OpenRouter was skipped or failed, try Gemini fallback
+        if not response_text and client:
+            image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
+            text_part  = types.Part.from_text(text=prompt)
 
-        result = response.text.strip() if response.text else ""
+            models_to_try = GEMINI_FALLBACK_CHAIN
+            response = None
+            last_error = None
+
+            for model_name in models_to_try:
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=[image_part, text_part],
+                        config=types.GenerateContentConfig(
+                            temperature=temperature,
+                            max_output_tokens=max_tokens,
+                        ),
+                    )
+                    if response:
+                        logger.info(f"Successfully generated content using fallback model: {model_name}")
+                        response_text = response.text.strip() if response.text else ""
+                        break
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"Failed to call vision model {model_name}: {e}. Trying fallback...")
+
+        if not response_text:
+            return "Error: Both OpenRouter and Gemini Vision models failed to respond."
+
         if screen_hash:
-            _set_cached_result(cache_key, result)
-        return result
+            _set_cached_result(cache_key, response_text)
+        return response_text
 
     except Exception as e:
         logger.error(f"Vision API Error: {e}")
@@ -263,7 +284,7 @@ def find_element_bounding_box(image_path: str, element_description: str, screen_
         if isinstance(box, list) and len(box) == 4:
             return box
     except Exception as e:
-        print(f"Failed to parse bounding box from Gemini: {response} - {e}")
+        logger.warning(f"Failed to parse bounding box from Gemini: {response} - {e}")
         
     return []
 

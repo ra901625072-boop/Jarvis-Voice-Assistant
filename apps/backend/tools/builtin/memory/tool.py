@@ -8,8 +8,8 @@ consolidated here from the old VisionTools to fix the misplaced ownership issue
 import asyncio
 from livekit.agents import llm
 from tools.builtin.base import JarvisToolset
-from modules.core.memory_manager import MemoryManager
-from modules.core.security_manager import SecurityManager
+from modules.memory.manager import MemoryManager
+from modules.security.manager import SecurityManager
 
 
 class MemoryTools(JarvisToolset):
@@ -79,6 +79,15 @@ class MemoryTools(JarvisToolset):
             formatted += f"- [{r.get('timestamp','?')}] {r.get('role','?')}: {r.get('content','')[:120]}...\n"
         return formatted
 
+    @llm.function_tool(
+        description=(
+            "Search summaries and transcripts of past conversation sessions. "
+            "Optional parameter 'when' filters search results by natural time frames (e.g., 'yesterday', 'last week', or a specific date like '2026-07-16')."
+        )
+    )
+    async def recall_past_session(self, query: str, when: str = None) -> str:
+        return await self.safe_execute(self.memory.recall_past_sessions, query, when)
+
     @llm.function_tool(description="Clear all conversation history. Requires user confirmation.")
     async def clear_history(self, confirmed: bool = False) -> str:
         return await self.safe_execute(
@@ -146,8 +155,10 @@ class MemoryTools(JarvisToolset):
         )
     )
     async def add_knowledge(self, entity_a: str, relation: str, entity_b: str) -> str:
-        await self.safe_execute(self.memory.add_entity, entity_a, "concept", "")
-        await self.safe_execute(self.memory.add_entity, entity_b, "concept", "")
+        await asyncio.gather(
+            self.safe_execute(self.memory.add_entity, entity_a, "concept", ""),
+            self.safe_execute(self.memory.add_entity, entity_b, "concept", ""),
+        )
         res = await self.safe_execute(self.memory.add_relationship, entity_a, relation, entity_b, 1.0)
         if isinstance(res, str) and res.startswith("Error:"):
             return res
@@ -156,16 +167,16 @@ class MemoryTools(JarvisToolset):
     @llm.function_tool(
         description=(
             "Get recent JARVIS self-reflections — insights about user habits, workflow patterns, "
-            "and lessons learned. Specify days (default 7) to look back."
+            "and lessons learned. Specify days (default 7) and project (e.g., 'general') to filter."
         )
     )
-    async def get_agent_reflections(self, days: int = 7) -> str:
-        reflections = await self.safe_execute(self.memory.get_agent_reflections, days)
+    async def get_agent_reflections(self, days: int = 7, project: str = None) -> str:
+        reflections = await self.safe_execute(self.memory.get_agent_reflections, days, project)
         if isinstance(reflections, str) and reflections.startswith("Error:"):
             return reflections
         if not reflections:
             return f"No reflections generated in the past {days} days."
-        lines = [f"Agent Reflections (Past {days} days):"]
+        lines = [f"Agent Reflections (Past {days} days, project: {project or 'all'}):"]
         for idx, r in enumerate(reflections, 1):
             lines.append(f"{idx}. [{r.get('period', 'daily')}] {r.get('created_at', '')[:10]}")
             lines.append(f"   {r.get('reflection', '')}")
@@ -198,39 +209,45 @@ class MemoryTools(JarvisToolset):
     @llm.function_tool(
         description=(
             "Retrieve lessons JARVIS has learned from past failures and experience replay. "
-            "Optionally filter by topic (e.g., 'selenium', 'google', 'download'). "
-            "Use this before attempting a task that has previously failed."
+            "Optionally filter by topic (e.g., 'selenium', 'google', 'download') and project."
         )
     )
-    async def get_lessons_learned(self, topic: str = "") -> str:
-        try:
+    async def get_lessons_learned(self, topic: str = "", project: str = None) -> str:
+        def _query_lessons():
+            query_args = []
+            where_clauses = []
+
             if topic:
-                with self.memory._lock:
-                    rows = self.memory.dbs["conversations"].execute(
-                        """SELECT lesson, occurrence_count, last_triggered
-                           FROM lessons_learned
-                           WHERE lesson LIKE ? OR source_pattern LIKE ?
-                           ORDER BY importance DESC, last_triggered DESC
-                           LIMIT 5""",
-                        (f"%{topic}%", f"%{topic}%"),
-                    ).fetchall()
-            else:
-                with self.memory._lock:
-                    rows = self.memory.dbs["conversations"].execute(
-                        """SELECT lesson, occurrence_count, last_triggered
-                           FROM lessons_learned
-                           ORDER BY importance DESC, last_triggered DESC
-                           LIMIT 8""",
-                    ).fetchall()
+                where_clauses.append("(lesson LIKE ? OR source_pattern LIKE ?)")
+                query_args.extend([f"%{topic}%", f"%{topic}%"])
+
+            if project and project != "general":
+                where_clauses.append("(project = ? OR project = 'general')")
+                query_args.append(project)
+
+            where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+            with self.memory._lock:
+                rows = self.memory.dbs["conversations"].execute(
+                    f"""SELECT lesson, occurrence_count, last_triggered
+                       FROM lessons_learned
+                       {where_str}
+                       ORDER BY importance DESC, last_triggered DESC
+                       LIMIT 8""",
+                    tuple(query_args),
+                ).fetchall()
 
             if not rows:
-                return f"No lessons found{f' for topic: {topic}' if topic else ''}."
+                filter_desc = f"topic: '{topic}'" if topic else ""
+                if project:
+                    filter_desc += f"{' and ' if filter_desc else ''}project: '{project}'"
+                return f"No lessons found{f' for {filter_desc}' if filter_desc else ''}."
             lines = ["Lessons Learned:"]
             for lesson, count, last in rows:
                 lines.append(f"\n[seen {count}x, last: {last[:10]}]\n  {lesson[:300]}")
             return "\n".join(lines)
-        except Exception as e:
-            return f"Error retrieving lessons: {e}"
+
+        return await self.safe_execute(_query_lessons)
 
     @llm.function_tool(
         description=(

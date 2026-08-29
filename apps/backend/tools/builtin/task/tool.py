@@ -10,8 +10,10 @@ import uuid
 import json
 from livekit.agents import llm
 from tools.builtin.base import JarvisToolset
-from modules.core.security_manager import SecurityManager
+from modules.security.manager import SecurityManager
 
+_bg_tasks = {}
+_MAX_BG_TASK_AGE = 3600  # evict completed/failed entries older than 1 hour
 
 class TaskTools(JarvisToolset):
     """
@@ -36,23 +38,42 @@ class TaskTools(JarvisToolset):
     def __init__(self, security: SecurityManager, room=None):
         super().__init__(security, room)
 
-    @staticmethod
-    def _get_task_manager():
+    _cached_task_manager = None
+
+    @classmethod
+    def _get_task_manager(cls):
+        if cls._cached_task_manager is not None:
+            return cls._cached_task_manager
         from container import ServiceContainer
         container = ServiceContainer.instance()
         if container:
             try:
-                return container.get("task_manager")
+                cls._cached_task_manager = container.get("task_manager")
+                return cls._cached_task_manager
             except KeyError:
                 pass
         from modules.planning.task_manager import BackgroundTaskManager
         mgr = BackgroundTaskManager()
         mgr.start()
+        cls._cached_task_manager = mgr
         return mgr
+
+    @staticmethod
+    def _evict_stale_bg_tasks():
+        """Remove completed/failed/cancelled _bg_tasks entries older than _MAX_BG_TASK_AGE."""
+        now = time.time()
+        stale = [
+            tid for tid, info in _bg_tasks.items()
+            if info.get("status") in ("completed", "failed", "cancelled")
+            and (now - info.get("start_time", now)) > _MAX_BG_TASK_AGE
+        ]
+        for tid in stale:
+            del _bg_tasks[tid]
 
     @llm.function_tool(description="List all recent background tasks and their statuses")
     async def list_background_tasks(self, limit: int = 10) -> str:
         try:
+            self._evict_stale_bg_tasks()
             task_manager = self._get_task_manager()
             tasks = await asyncio.to_thread(task_manager.get_all_tasks, limit)
             lines = []
@@ -76,11 +97,18 @@ class TaskTools(JarvisToolset):
                         f"- Task ID: {t_id}, Type: AsyncBackground, Status: {status}{result}{err}"
                     )
 
+            # AgentStateManager active plan check
+            from modules.task.state_manager import AgentStateManager
+            state_summary = AgentStateManager().get_state_summary()
+            if "No active plan" not in state_summary:
+                lines.append(f"--- Active Cognitive Plan ---\n{state_summary}")
+
             if not lines:
-                return "No background tasks have been registered yet."
-            return "Recent background tasks:\n" + "\n".join(lines)
+                return "No background tasks or active plans have been registered yet."
+            return "Recent background tasks & plan status:\n" + "\n".join(lines)
         except Exception as e:
             return f"Error retrieving tasks: {e}"
+
 
     @llm.function_tool(description="Get the detailed status of a specific background task by its ID")
     async def get_background_task_status(self, task_id: str) -> str:
@@ -161,7 +189,11 @@ class TaskTools(JarvisToolset):
 
         from container import ServiceContainer
         container = ServiceContainer.instance()
-        tools_list = container.get("tools") if container else []
+        tools_list = container.get_or_none("tools") if container else []
+        if not tools_list:
+            ee = container.get_or_none("execution_engine") if container else None
+            if ee and hasattr(ee, "tools"):
+                tools_list = list(ee.tools.values())
 
         if not tools_list:
             return "Error: Tools not available in ServiceContainer."
@@ -182,15 +214,34 @@ class TaskTools(JarvisToolset):
         }
 
         def _done(t):
+            from modules.task.events import task_event_bus
             try:
                 res = t.result()
                 _bg_tasks[task_id]["status"] = "completed"
                 _bg_tasks[task_id]["result"] = str(res)
+                task_event_bus.publish({
+                    "task_id": task_id,
+                    "task_type": tool_name,
+                    "status": "completed",
+                    "result": str(res),
+                    "label": f"Background Tool: {tool_name}",
+                    "announce": True,
+                    "priority": "normal"
+                })
             except asyncio.CancelledError:
                 _bg_tasks[task_id]["status"] = "cancelled"
             except Exception as e:
                 _bg_tasks[task_id]["status"] = "failed"
                 _bg_tasks[task_id]["error"] = str(e)
+                task_event_bus.publish({
+                    "task_id": task_id,
+                    "task_type": tool_name,
+                    "status": "failed",
+                    "error": str(e),
+                    "label": f"Background Tool: {tool_name}",
+                    "announce": True,
+                    "priority": "high"
+                })
 
         task.add_done_callback(_done)
         return f"Successfully launched '{tool_name}' in the background. Task ID: {task_id}"

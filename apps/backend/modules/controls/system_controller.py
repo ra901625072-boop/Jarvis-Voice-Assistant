@@ -1,10 +1,18 @@
 import os
 import subprocess
-import pyperclip
-import pyautogui
 import logging
 import platform
 import tempfile
+
+try:
+    import pyperclip
+except Exception:
+    pyperclip = None
+
+try:
+    import pyautogui
+except Exception:
+    pyautogui = None
 
 logger = logging.getLogger("JARVIS.System")
 

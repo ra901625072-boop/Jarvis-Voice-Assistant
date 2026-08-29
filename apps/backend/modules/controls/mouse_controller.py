@@ -1,18 +1,19 @@
-import pyautogui
 import logging
 import time
-import os
-import tempfile
 from typing import Tuple, Optional, Callable
 from PIL import Image
 
 try:
+    import pyautogui
+except Exception:
+    pyautogui = None
+
+try:
     from screeninfo import get_monitors
     import pygetwindow as gw
-except ImportError:
-    pass
-
-
+except Exception:
+    gw = None
+    get_monitors = None
 
 logger = logging.getLogger("JARVIS.Mouse")
 
@@ -35,15 +36,19 @@ class MouseController:
     Caller -> move()/click()/drag_to() -> _is_safe_coordinate() -> _safe_execute() -> pyautogui functions -> OS Input Queue -> Caller
     """
     def __init__(self):
-        pyautogui.FAILSAFE = True
+        if pyautogui is not None:
+            pyautogui.FAILSAFE = True
         logger.info("MouseController initialized.")
 
     def _safe_execute(self, action_func: Callable, retries: int = 3, delay: float = 0.5) -> bool:
+        if pyautogui is None:
+            logger.warning("PyAutoGUI is unavailable on this platform/display.")
+            return False
         for attempt in range(retries):
             try:
                 action_func()
                 return True
-            except pyautogui.FailSafeException:
+            except getattr(pyautogui, "FailSafeException", Exception):
                 logger.warning("PyAutoGUI FailSafe triggered. Aborting action.")
                 return False
             except Exception as e:

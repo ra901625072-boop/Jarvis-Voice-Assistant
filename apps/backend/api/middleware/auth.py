@@ -1,15 +1,12 @@
+import logging
 from fastapi import HTTPException, Depends, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from container import ServiceContainer
 
+logger = logging.getLogger("JARVIS.AuthMiddleware")
 security_scheme = HTTPBearer()
 
-def get_security_manager():
-    container = ServiceContainer.instance()
-    if container:
-        return container.get("security")
-    from modules.core.security_manager import SecurityManager
-    return SecurityManager()
+from api.dependencies import get_security_manager
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Security(security_scheme),
@@ -20,8 +17,10 @@ async def get_current_user(
         payload = security_mgr.verify_jwt(token)
         return payload
     except PermissionError as e:
+        logger.warning(f"Permission error during auth: {e}")
         raise HTTPException(status_code=401, detail=str(e))
     except Exception as e:
+        logger.warning(f"Authentication verification failed: {e}")
         raise HTTPException(status_code=401, detail="Authentication failed")
 
 def require_role(allowed_roles: list):

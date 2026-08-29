@@ -7,7 +7,7 @@ from modules.vision import vision
 
 try:
     import pygetwindow as gw
-    import win32com.client
+    import comtypes.client
     _NATIVE_SUPPORT = True
 except ImportError:
     _NATIVE_SUPPORT = False
@@ -20,6 +20,44 @@ Do not include any other text, explanations, or formatting. Just output the JSON
 Example:
 {"Search box": [100, 200, 150, 400], "Login Button": [50, 800, 100, 950]}
 """
+
+def clean_and_parse_json(text: str) -> Optional[dict]:
+    """
+    Cleans markdown code fences, trailing commas, and minor syntax faults from model JSON output.
+    """
+    if not text:
+        return None
+    import re
+    cleaned = text.strip()
+    fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
+    if fence_match:
+        cleaned = fence_match.group(1)
+    else:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            cleaned = cleaned[start:end+1]
+
+    cleaned = re.sub(r",\s*([\}\]])", r"\1", cleaned)
+
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        try:
+            lines = cleaned.splitlines()
+            if len(lines) > 2:
+                repaired = "\n".join(lines[:-1])
+                repaired = re.sub(r",\s*$", "", repaired).strip()
+                open_braces = repaired.count("{") - repaired.count("}")
+                repaired += "}" * max(0, open_braces)
+                data = json.loads(repaired)
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+    return None
 
 class UIMapper:
     """
@@ -43,12 +81,10 @@ class UIMapper:
 
         elements = {}
         try:
-            import pythoncom
-            pythoncom.CoInitialize()
+            import comtypes.client
+            mod = comtypes.client.GetModule("UIAutomationCore.dll")
+            uia = comtypes.client.CreateObject(mod.CUIAutomation, interface=mod.IUIAutomation)
 
-            # Initialize UI Automation COM
-            ui_auto = win32com.client.Dispatch("UIAutomationCore.CUIAutomation")
-            
             hwnd = None
             win_rect = None
 
@@ -61,7 +97,6 @@ class UIMapper:
             else:
                 hwnd = ctypes.windll.user32.GetForegroundWindow()
                 if hwnd:
-                    # Get absolute coordinates of the focused window
                     rect = ctypes.wintypes.RECT()
                     ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
                     win_rect = (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
@@ -73,16 +108,16 @@ class UIMapper:
             if win_width <= 0 or win_height <= 0:
                 return {}
 
-            window_element = ui_auto.ElementFromHandle(hwnd)
+            window_element = uia.ElementFromHandle(hwnd)
             if not window_element:
                 return {}
 
             # Search TreeScope_Descendants (4) for common interactive element control types:
             # Button: 50000, Edit: 50004, Hyperlink: 50005, TabItem: 50019, CheckBox: 50002, ComboBox: 50003, Text: 50020
             control_types = [50000, 50004, 50005, 50019, 50002, 50003, 50020]
-            
+
             for ctype in control_types:
-                cond = ui_auto.CreatePropertyCondition(30003, ctype) # UIA_ControlTypePropertyId = 30003
+                cond = uia.CreatePropertyCondition(30003, ctype) # UIA_ControlTypePropertyId = 30003
                 found = window_element.FindAll(4, cond) # TreeScope_Descendants = 4
                 if found:
                     for i in range(found.Length):
@@ -90,19 +125,15 @@ class UIMapper:
                         name = el.CurrentName
                         if name and name.strip():
                             rect = el.CurrentBoundingRectangle
-                            # rect: (left, top, right, bottom)
-                            if rect and len(rect) == 4:
-                                el_left, el_top, el_right, el_bottom = rect
-                                
-                                # Scale coordinates relative to window bounds (0 to 1000)
-                                ymin = max(0, min(1000, int((el_top - win_top) / win_height * 1000)))
-                                xmin = max(0, min(1000, int((el_left - win_left) / win_width * 1000)))
-                                ymax = max(0, min(1000, int((el_bottom - win_top) / win_height * 1000)))
-                                xmax = max(0, min(1000, int((el_right - win_left) / win_width * 1000)))
-                                
-                                # Ensure bounds are valid and within window area
-                                if ymax > ymin and xmax > xmin:
-                                    elements[name] = [ymin, xmin, ymax, xmax]
+                            el_left, el_top, el_right, el_bottom = rect.left, rect.top, rect.right, rect.bottom
+
+                            ymin = max(0, min(1000, int((el_top - win_top) / win_height * 1000)))
+                            xmin = max(0, min(1000, int((el_left - win_left) / win_width * 1000)))
+                            ymax = max(0, min(1000, int((el_bottom - win_top) / win_height * 1000)))
+                            xmax = max(0, min(1000, int((el_right - win_left) / win_width * 1000)))
+
+                            if ymax > ymin and xmax > xmin:
+                                elements[name.strip()] = [ymin, xmin, ymax, xmax]
 
             logger.info(f"Natively extracted {len(elements)} UI elements using Windows UI Automation.")
         except Exception as e:
@@ -146,24 +177,21 @@ class UIMapper:
             image_path=image_path,
             prompt=UI_MAP_PROMPT,
             temperature=0.0,
-            max_tokens=2000,
+            max_tokens=1000,
             screen_hash=screen_hash
         )
         
         if not response or str(response).startswith("Error:"):
             return {}
 
-        try:
-            clean_resp = response.strip().strip('`').replace('json\n', '').strip()
-            ui_map = json.loads(clean_resp)
-            if isinstance(ui_map, dict):
-                self.current_map = ui_map
-                self.last_hash = screen_hash
-                logger.info(f"UI map built with {len(ui_map)} elements via Vision API.")
-                return self.current_map
-        except Exception as e:
-            logger.error(f"Failed to parse UI map from Gemini: {response} - {e}")
-            
+        ui_map = clean_and_parse_json(response)
+        if ui_map:
+            self.current_map = ui_map
+            self.last_hash = screen_hash
+            logger.info(f"UI map built with {len(ui_map)} elements via Vision API.")
+            return self.current_map
+
+        logger.error(f"Failed to parse UI map from Gemini: {response}")
         return {}
 
     def get_element(self, element_name: str, window_title: Optional[str] = None) -> Optional[List[int]]:
@@ -171,12 +199,23 @@ class UIMapper:
         Retrieves the bounding box for an element from the current map.
         Rebuilds the map if it's empty or screen has changed.
         """
+        if not element_name:
+            return None
+            
         self.build_map(window_title)
             
-        target = element_name.lower()
+        target = str(element_name).lower()
         for name, bbox in self.current_map.items():
-            if target in name.lower():
-                return bbox
+            if name and isinstance(name, str) and target in name.lower():
+                if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+                    return list(bbox)
                 
         logger.warning(f"Element '{element_name}' not found in UI map.")
         return None
+
+    def find_element(self, element_name: str, window_title: Optional[str] = None) -> Optional[List[int]]:
+        """
+        Alias for get_element for compatibility with VisionAgent and external callers.
+        """
+        return self.get_element(element_name, window_title)
+

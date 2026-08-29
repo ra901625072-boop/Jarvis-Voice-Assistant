@@ -15,5 +15,12 @@ def get_security_manager():
     container = ServiceContainer.instance()
     if container:
         return container.get("security")
-    from modules.core.security_manager import SecurityManager
+    from modules.security.manager import SecurityManager
     return SecurityManager()
+
+def get_memory():
+    container = ServiceContainer.instance()
+    if container:
+        return container.get_or_none("memory")
+    from modules.memory.manager import MemoryManager
+    return MemoryManager()

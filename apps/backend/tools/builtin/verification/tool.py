@@ -3,7 +3,7 @@ import asyncio
 from livekit.agents import llm
 from tools.builtin.base import JarvisToolset
 from modules.execution.verification_engine import VerificationEngine
-from modules.core.security_manager import SecurityManager
+from modules.security.manager import SecurityManager
 
 
 class VerificationTools(JarvisToolset):
@@ -50,7 +50,7 @@ class VerificationTools(JarvisToolset):
         )
     )
     async def verify_execution(self, condition_type: str, target: str) -> str:
-        from modules.core.state_manager import AgentStateManager, AgentState
+        from modules.task.state_manager import AgentStateManager, AgentState
 
         sm = AgentStateManager()
         sm.set_agent_state(AgentState.VERIFYING)

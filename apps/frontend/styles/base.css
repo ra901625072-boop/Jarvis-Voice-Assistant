@@ -1,0 +1,192 @@
+/* ==========================================================================
+   JARVIS MULTI-AGENT CONTROL CENTER - BESPOKE DESIGN SYSTEM V3
+   Theme: Executive Precision Obsidian & Telemetry Command Center
+   ========================================================================== */
+
+:root {
+  /* Surface & Base Color Tokens */
+  --c-bg: #070a12;                     /* Obsidian void */
+  --c-surface: rgba(15, 21, 35, 0.75); /* High-contrast slate panel */
+  --c-surface-hover: rgba(22, 31, 51, 0.85);
+  --c-surface-active: rgba(30, 42, 69, 0.9);
+  --c-surface-inset: rgba(5, 8, 15, 0.6);
+
+  /* Precision Borders */
+  --c-border: rgba(255, 255, 255, 0.08);
+  --c-border-subtle: rgba(255, 255, 255, 0.04);
+  --c-border-active: rgba(59, 130, 246, 0.4);
+  --c-border-emerald: rgba(16, 185, 129, 0.4);
+  --c-border-amber: rgba(245, 158, 11, 0.4);
+
+  /* Executive Palette */
+  --c-primary: #3B82F6;                /* Electric Blue */
+  --c-primary-glow: rgba(59, 130, 246, 0.18);
+  --c-secondary: #0EA5E9;              /* Deep Cyan */
+  --c-violet: #8B5CF6;                 /* Intelligence Violet */
+
+  /* Telemetry Status Colors */
+  --c-success: #10B981;                /* Emerald Signal */
+  --c-success-glow: rgba(16, 185, 129, 0.15);
+  --c-warning: #F59E0B;                /* Quantum Amber */
+  --c-warning-glow: rgba(245, 158, 11, 0.15);
+  --c-danger: #EF4444;                 /* Crimson Warning */
+  --c-danger-glow: rgba(239, 68, 68, 0.15);
+
+  /* Text & Labels */
+  --c-text: #F8FAFC;                   /* Crisp White */
+  --c-text-muted: #94A3B8;             /* Slate Muted */
+  --c-text-dim: #64748B;               /* Dim Label */
+  
+  /* Legacy alias variables for backwards compatibility */
+  --c-glow: var(--c-primary);
+  --c-glow-cyan: var(--c-secondary);
+  --c-text-glow: #E2E8F0;
+
+  /* Typography */
+  --font-display: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  /* Motion Physics */
+  --transition-fast: 0.12s cubic-bezier(0.16, 1, 0.3, 1);
+  --transition-normal: 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  --transition-slow: 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Spacing Scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+}
+
+/* ==========================================================================
+   GLOBAL RESET & ENVIRONMENT CONFIG
+   ========================================================================== */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--c-bg);
+  background-image: 
+    radial-gradient(circle at 50% 0%, rgba(59, 130, 246, 0.08) 0%, transparent 60%),
+    linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+  background-size: 100% 100%, 32px 32px, 32px 32px;
+  color: var(--c-text);
+  font-family: var(--font-body);
+  height: 100vh;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Precision Subtle Grid Overlay */
+.bg-glow {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.blur-circle {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(140px);
+  opacity: 0.08;
+  mix-blend-mode: screen;
+}
+
+.purple-glow {
+  top: -15%;
+  left: 20%;
+  width: 40vw;
+  height: 40vw;
+  background: radial-gradient(circle, var(--c-primary) 0%, transparent 70%);
+}
+
+.blue-glow {
+  bottom: -20%;
+  right: 10%;
+  width: 45vw;
+  height: 45vw;
+  background: radial-gradient(circle, var(--c-secondary) 0%, transparent 70%);
+}
+
+.cyan-glow {
+  top: 30%;
+  left: -10%;
+  width: 30vw;
+  height: 30vw;
+  background: radial-gradient(circle, var(--c-violet) 0%, transparent 70%);
+}
+
+#app {
+  position: relative;
+  z-index: 10;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* Precision Glass Command Panels */
+.glass-panel {
+  background: var(--c-surface);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transition: border-color var(--transition-normal), box-shadow var(--transition-normal), transform var(--transition-fast);
+}
+
+.glass-panel:hover {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+/* Keyboard hint badges */
+.kbd-badge, .kbd-hint {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--c-text-muted);
+  letter-spacing: 0.5px;
+}
+
+/* Custom scrollbars */
+.scrollable-y {
+  overflow-y: auto;
+}
+
+.scrollable-y::-webkit-scrollbar {
+  width: 4px;
+}
+
+.scrollable-y::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollable-y::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+}
+
+.scrollable-y::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+

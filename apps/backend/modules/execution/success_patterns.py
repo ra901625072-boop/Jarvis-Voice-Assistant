@@ -1,7 +1,7 @@
 import logging
 import json
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Any, Optional
 
 logger = logging.getLogger("JARVIS.SuccessLearning")
 
@@ -33,6 +33,9 @@ class SuccessLearner:
         """
         Record a successful plan for a goal.
         """
+        import os
+        if os.environ.get("JARVIS_E2E_SIM") == "1":
+            return
         if not self._lock or "conversations" not in self._dbs:
             return
 
@@ -99,3 +102,38 @@ class SuccessLearner:
         except Exception as e:
             logger.debug(f"Failed to get preferred workflow: {e}")
         return None
+
+    def record_failure(self, goal: str):
+        """Record a failure for a goal pattern, decrementing its score."""
+        import os
+        if os.environ.get("JARVIS_E2E_SIM") == "1":
+            return
+        if not self._lock or "conversations" not in self._dbs:
+            return
+        try:
+            with self._lock:
+                self._dbs["conversations"].execute(
+                    "UPDATE success_patterns SET score=MAX(score-0.2, 0.0) WHERE goal=?",
+                    (goal,)
+                )
+                self._dbs["conversations"].commit()
+        except Exception as e:
+            logger.debug(f"Failed to record failure pattern: {e}")
+
+    def decay_old_patterns(self):
+        """Decay scores of old patterns periodically."""
+        if not self._lock or "conversations" not in self._dbs:
+            return
+        try:
+            with self._lock:
+                # Decay patterns that haven't been used recently or have very low score
+                self._dbs["conversations"].execute(
+                    "UPDATE success_patterns SET score=MAX(score-0.05, 0.0)"
+                )
+                self._dbs["conversations"].execute(
+                    "DELETE FROM success_patterns WHERE score=0.0 AND use_count < 2"
+                )
+                self._dbs["conversations"].commit()
+            logger.info("Decayed old success patterns.")
+        except Exception as e:
+            logger.debug(f"Failed to decay success patterns: {e}")

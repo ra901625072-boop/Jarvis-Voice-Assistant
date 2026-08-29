@@ -1,7 +1,4 @@
 import logging
-import json
-import asyncio
-from typing import Dict, Any
 
 from ai.agents.base_agent import BaseAgent
 from ai.agents.types import AgentTask, AgentResult
@@ -22,16 +19,16 @@ class VerificationAgent(BaseAgent):
         payload = task.payload
         
         try:
-            if task_type == "verify_task":
-                return await self._handle_verify_task(task, payload)
+            if task_type == "verify_result":
+                return await self._handle_verify_result(task, payload)
             else:
                 return self._create_result(task, success=False, error=f"VerificationAgent does not support task type '{task_type}'")
         except Exception as e:
             logger.exception(f"VerificationAgent failed handling '{task_type}'")
             return self._create_result(task, success=False, error=str(e))
 
-    async def _handle_verify_task(self, task: AgentTask, payload: dict) -> AgentResult:
-        output = payload.get("output", "")
+    async def _handle_verify_result(self, task: AgentTask, payload: dict) -> AgentResult:
+        output = payload.get("output", payload.get("original_result", ""))
         expected = payload.get("expected_outcome", "")
         
         prompt = f"""

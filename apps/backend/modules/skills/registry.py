@@ -23,8 +23,10 @@ class SkillRegistry:
         self.verification = verification
         self.skills: List[BaseSkill] = []
 
-    def load_skills(self) -> List[Any]:
+    def load_skills(self, force_reload: bool = False) -> List[Any]:
         """Scans, imports, and instantiates skills in backend/modules/skills."""
+        if self.skills and not force_reload:
+            return self.skills
         self.skills = []
         skills_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -51,3 +53,21 @@ class SkillRegistry:
 
         logger.info(f"SkillRegistry loaded total of {len(self.skills)} skills.")
         return self.skills
+
+    def distill_skill(self, skill_name: str, code_content: str) -> bool:
+        """Dynamically creates a new python skill file in modules/skills and reloads the registry."""
+        skills_dir = os.path.dirname(os.path.abspath(__file__))
+        safe_name = skill_name.lower().replace(" ", "_")
+        filename = f"{safe_name}_skill.py"
+        file_path = os.path.join(skills_dir, filename)
+
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(code_content)
+            logger.info(f"Distilled new skill file: {file_path}")
+            self.load_skills(force_reload=True)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to distill skill '{skill_name}': {e}")
+            return False
+

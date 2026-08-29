@@ -1,13 +1,940 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>frontend</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>JARVIS - Multi-Agent Control Center</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22><rect width=%2224%22 height=%2224%22 rx=%226%22 fill=%22%236366F1%22/><circle cx=%2212%22 cy=%2212%22 r=%224.2%22 fill=%22%2306B6D4%22/></svg>">
+  
+  <!-- Inter & Space Grotesk Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  
+  <link rel="stylesheet" href="styles.css">
+  
+  <!-- LiveKit JS SDK via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/livekit-client@2.8.1/dist/livekit-client.umd.min.js" crossorigin="anonymous"></script>
+  <!-- Markdown, Sanitization, and Syntax Highlighting Libraries via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github-dark.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11/highlight.min.js"></script>
+</head>
+<body>
+
+  <!-- Futuristic Ambient Glow Background -->
+  <div class="bg-glow">
+    <div class="blur-circle purple-glow"></div>
+    <div class="blur-circle blue-glow"></div>
+    <div class="blur-circle cyan-glow"></div>
+  </div>
+
+  <!-- Global Command Palette -->
+  <div id="command-palette" class="command-palette-overlay hidden">
+    <div class="command-palette-container glass-panel">
+      <div class="command-palette-search-wrapper">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="search-icon"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        <input type="text" id="command-palette-input" placeholder="Type a command or search tasks, agents, workflows, approvals..." autocomplete="off">
+        <span class="kbd-hint">ESC</span>
+      </div>
+      <div class="command-palette-results scrollable-y" id="command-palette-results">
+        <div class="palette-empty">Type to search across the system...</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="app">
+    <!-- ============================= START/LOGIN SCREEN ============================= -->
+    <div id="login-screen" class="glass-login active">
+      <div class="login-wrapper">
+        <div class="brand-badge-container">
+          <div class="brand-glow-ring"></div>
+          <div class="brand-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="3" y="3" width="18" height="18" rx="5" />
+              <circle cx="12" cy="12" r="4" fill="currentColor" fill-opacity="0.1" />
+              <path d="M12 8v8M8 12h8" stroke-linecap="round" />
+            </svg>
+          </div>
+        </div>
+        <h1>JARVIS</h1>
+        <p class="subtitle">Multi-Agent Orchestration Control Center</p>
+
+        <!-- LOGIN CARD -->
+        <div class="login-card glass-panel" id="card-login">
+          <div class="input-group">
+            <label for="login-username">Username / ID</label>
+            <div class="password-wrapper">
+              <input type="text" id="login-username" placeholder="Enter username" autocomplete="username">
+              <span class="input-glow-line"></span>
+            </div>
+          </div>
+          <div class="input-group">
+            <label for="login-password">Password / API Key</label>
+            <div class="password-wrapper">
+              <input type="password" id="login-password" placeholder="Enter password or system key" autocomplete="current-password">
+              <span class="input-glow-line"></span>
+            </div>
+          </div>
+
+          <div class="error-msg hidden" id="login-error"></div>
+
+          <!-- Hidden legacy input to prevent script breakage -->
+          <input type="hidden" id="api-key-input">
+
+          <button class="btn-primary" id="btn-connect">
+            <span>Establish Connection</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+              <polyline points="12 5 19 12 12 19"></polyline>
+            </svg>
+          </button>
+          
+          <p class="auth-toggle">Don't have an account? <a href="#" id="link-goto-signup">Create Account</a></p>
+        </div>
+
+        <!-- SIGNUP CARD -->
+        <div class="login-card glass-panel hidden" id="card-signup">
+          <div class="input-group">
+            <label for="signup-username">Username</label>
+            <div class="password-wrapper">
+              <input type="text" id="signup-username" placeholder="Choose a username" autocomplete="username">
+              <span class="input-glow-line"></span>
+            </div>
+          </div>
+          <div class="input-group">
+            <label for="signup-password">Password</label>
+            <div class="password-wrapper">
+              <input type="password" id="signup-password" placeholder="Create a password (min 6 chars)" autocomplete="new-password">
+              <span class="input-glow-line"></span>
+            </div>
+          </div>
+          <div class="input-group">
+            <label for="signup-email">Email Address</label>
+            <div class="password-wrapper">
+              <input type="email" id="signup-email" placeholder="name@example.com" autocomplete="email">
+              <span class="input-glow-line"></span>
+            </div>
+          </div>
+          <div class="input-group">
+            <label for="signup-phone">Mobile Number</label>
+            <div class="password-wrapper">
+              <input type="tel" id="signup-phone" placeholder="+1234567890" autocomplete="tel">
+              <span class="input-glow-line"></span>
+            </div>
+          </div>
+
+          <div class="error-msg hidden" id="signup-error"></div>
+          <div class="success-msg hidden" id="signup-success">Account created successfully! Redirecting...</div>
+
+          <button class="btn-primary" id="btn-signup-submit">
+            <span>Create Account</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+              <circle cx="9" cy="7" r="4"></circle>
+              <line x1="19" y1="8" x2="19" y2="14"></line>
+              <line x1="16" y1="11" x2="22" y2="11"></line>
+            </svg>
+          </button>
+          
+          <p class="auth-toggle">Already have an account? <a href="#" id="link-goto-login">Sign In</a></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================= MAIN DASHBOARD SCREEN ============================= -->
+    <div id="dashboard-screen" class="hidden">
+      <!-- Sidebar Navigation -->
+      <aside class="sidebar glass-panel">
+        <div class="sidebar-header">
+          <div class="brand-small">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="4"></rect>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+          </div>
+          <span class="logo-text">JARVIS</span>
+        </div>
+
+        <nav class="sidebar-nav">
+          <button class="nav-item active" data-tab="voice">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+            <span>Voice Console</span>
+          </button>
+          
+          <button class="nav-item" data-tab="tasks">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+            <span>Task Pipeline</span>
+            <span class="badge hidden" id="badge-tasks-count">0</span>
+          </button>
+          
+          <button class="nav-item" data-tab="swarm">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+            <span>Swarm & Skills</span>
+          </button>
+          
+          <button class="nav-item" data-tab="workflows">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+            <span>Workflows</span>
+          </button>
+          
+          <button class="nav-item" data-tab="approvals">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+            <span>Gates & Approvals</span>
+            <span class="badge alarm-badge hidden" id="badge-approvals-count">0</span>
+          </button>
+          
+          <button class="nav-item" data-tab="observability">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
+            <span>Observability & Logs</span>
+            <span class="badge hidden" id="badge-notifications-count">0</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <button class="btn-settings" id="btn-settings-trigger" style="margin-bottom: 8px; width: 100%; display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: none; border: none; color: var(--c-text-muted); border-radius: 8px; cursor: pointer; transition: all 0.2s; font-size: 13px; font-weight: 500;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 18px; height: 18px;"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+            <span>Settings</span>
+          </button>
+          <button class="btn-logout" id="btn-logout-action">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+            <span>Disconnect</span>
+          </button>
+        </div>
+      </aside>
+
+      <!-- Main Display Area -->
+      <main class="main-display">
+        <!-- Top Header Bar -->
+        <header class="top-bar glass-panel">
+          <div class="page-title-area">
+            <span class="sub-nav-indicator">CORE // COMMAND</span>
+            <h2 id="current-tab-title">Voice Console</h2>
+          </div>
+          
+          <!-- Header Operations summary -->
+          <div class="header-operations">
+            <!-- Command Palette Trigger -->
+            <button class="btn-command-palette-trigger" id="btn-command-trigger" title="Command Palette (Ctrl+K)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="icon-search"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+              <span>Command Menu</span>
+              <kbd class="kbd-badge">Ctrl+K</kbd>
+            </button>
+            
+            <div class="mini-status-pill hidden" id="pill-active-tasks">
+              <span class="label">TASKS</span>
+              <span class="value" id="val-pill-tasks">0</span>
+            </div>
+            
+            <div class="mini-status-pill hidden" id="pill-pending-approvals">
+              <span class="label">APPROVALS</span>
+              <span class="value danger" id="val-pill-approvals">0</span>
+            </div>
+
+            <div class="status-indicator">
+              <div class="dot" id="status-dot"></div>
+              <span id="status-text">Scanning Network</span>
+            </div>
+          </div>
+        </header>
+
+        <!-- Dynamic Screen Content Container -->
+        <div class="screen-content">
+          
+          <!-- ============================= TAB: VOICE ASSISTANT ============================= -->
+          <div id="tab-voice" class="tab-pane active">
+            <div class="voice-unified-layout">
+              <!-- Left Column: Orb telemetry -->
+              <div class="voice-left-col glass-panel">
+                <div class="orb-outer-wrapper">
+                  <div class="orb-glow-backdrop" id="orb-glow"></div>
+                  <div class="orb-container-body" id="voice-orb">
+                    <!-- Dynamic Waveform Canvas -->
+                    <canvas id="wave-canvas"></canvas>
+                    <div class="orb-logo">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <circle cx="12" cy="12" r="4" fill="currentColor" fill-opacity="0.1" />
+                        <path d="M12 2v2M12 20v2M4 12H2M22 12h-2M12 7v10M7 12h10" />
+                      </svg>
+                    </div>
+                  </div>
+                </div>
+                <div class="voice-header-meta">
+                  <div class="agent-state-text" id="agent-state-text">OFFLINE</div>
+                  <div class="speech-telemetry" id="speech-telemetry">
+                    <span class="label">AUDIO STREAM STATUS</span>
+                    <span class="val">BUS IDLE</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Right Column: Conversation history and inputs -->
+              <div class="voice-right-col glass-panel">
+                <div class="voice-middle-row">
+                  <div class="voice-main-tabs">
+                    <button class="voice-tab active" data-voice-tab="transcript">TRANSCRIPT BUS</button>
+                    <button class="voice-tab" data-voice-tab="thinking">REASONING & THINKING TRACE</button>
+                  </div>
+                  
+                  <div class="voice-tab-content active" id="voice-tab-transcript">
+                    <div class="transcript-box scrollable-y" id="transcript-box">
+                      <div class="chat-msg system-msg">
+                        <div class="system-badge">SYS</div>
+                        <div class="msg-content">Core system ready. Establishing visual telemetry...</div>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div class="voice-tab-content" id="voice-tab-thinking">
+                    <div class="thinking-box scrollable-y" id="thinking-box">
+                      <div class="no-data-msg">No active reasoning logs. Trigger conversation to stream reasoning process.</div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Input area inside right panel -->
+                <div class="voice-bottom-row">
+                  <!-- File previews above inputs -->
+                  <div class="attachment-preview hidden" id="voice-attachment-preview">
+                    <div class="file-chip">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="file-icon"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                      <span class="file-name" id="voice-attached-file-name">document.xlsx</span>
+                      <button type="button" class="btn-remove-attachment" id="btn-voice-remove-attachment" title="Remove attachment">&times;</button>
+                    </div>
+                  </div>
+                  <div class="attachment-preview hidden" id="chat-attachment-preview">
+                    <div class="file-chip">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="file-icon"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                      <span class="file-name" id="chat-attached-file-name">document.xlsx</span>
+                      <button type="button" class="btn-remove-attachment" id="btn-chat-remove-attachment" title="Remove attachment">&times;</button>
+                    </div>
+                  </div>
+
+                  <div class="chat-input-container hidden">
+                    <div class="input-field-wrapper">
+                      <input type="text" id="chat-input" placeholder="Deploy textual command to JARVIS..." autocomplete="off">
+                      <button type="button" class="btn-attach-file" id="btn-chat-attach-file" title="Attach Telemetry Data File (.xlsx, .csv, .txt, etc.)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
+                      </button>
+                      <input type="file" id="chat-file-uploader" class="hidden">
+                    </div>
+                    <button class="btn-primary btn-chat-send" id="btn-send-chat">
+                      <span>TRANSMIT</span>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Control Dock (Action buttons) - Now a Sibling -->
+              <div class="control-dock glass-panel">
+                <button class="btn-dock btn-mode" id="btn-toggle-mode" title="Text Mode Terminal">
+                  <svg class="icon-keyboard" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2" ry="2"></rect><line x1="6" y1="8" x2="6" y2="8"></line><line x1="10" y1="8" x2="10" y2="8"></line><line x1="14" y1="8" x2="14" y2="8"></line><line x1="18" y1="8" x2="18" y2="8"></line><line x1="6" y1="12" x2="6" y2="12"></line><line x1="10" y1="12" x2="10" y2="12"></line><line x1="14" y1="12" x2="14" y2="12"></line><line x1="18" y1="12" x2="18" y2="12"></line><line x1="7" y1="16" x2="17" y2="16"></line></svg>
+                  <svg class="icon-mic-toggle hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+                </button>
+                <button class="btn-dock btn-mic" id="btn-mic" title="Mic Status">
+                  <svg class="icon-mic-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+                  <svg class="icon-mic-off hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="1" y1="1" x2="23" y2="23"></line><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"></path><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"></line><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+                </button>
+                <button class="btn-dock btn-voice-upload" id="btn-voice-upload" title="Attach Data File to Session">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
+                </button>
+                <input type="file" id="voice-file-uploader" class="hidden">
+                <button class="btn-dock btn-hangup" id="btn-hangup" title="Terminate Session">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"></path><line x1="23" y1="1" x2="1" y2="23"></line></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- ============================= TAB: TASKS QUEUE ============================= -->
+          <div id="tab-tasks" class="tab-pane">
+            <div class="tasks-layout-consolidated bento-grid">
+              <!-- Task Creator Widget (Bento Cell) -->
+              <div class="glass-panel task-creator-widget bento-cell" style="padding: 20px; display: flex; flex-direction: column; justify-content: flex-start; gap: 12px;">
+                <div class="cell-title">DEPLOY BACKGROUND TASK</div>
+                <p class="description" style="font-size: 12px; color: var(--c-text-muted); margin-bottom: 12px;">Submit an asynchronous natural language command to the background supervisor agent pipeline.</p>
+                
+                <div class="input-field-wrapper" style="position: relative; display: flex; align-items: center; width: 100%;">
+                  <input type="text" id="task-command-input" placeholder="Deploy textual command to JARVIS..." autocomplete="off" style="width: 100%; padding: 14px 46px 14px 18px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; color: #fff; font-size: 13px;">
+                  <button type="button" class="btn-attach-file" id="btn-attach-file" title="Attach Telemetry Data File (.xlsx, .csv, .txt, etc.)" style="position: absolute; right: 14px; background: transparent; border: none; color: var(--c-text-dim); cursor: pointer;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 16px; height: 16px;"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
+                  </button>
+                  <input type="file" id="file-uploader" class="hidden" style="display: none;">
+                </div>
+                
+                <div class="attachment-preview hidden" id="attachment-preview" style="margin-top: 5px; display: flex;">
+                  <div class="file-chip" style="background: rgba(16, 185, 129, 0.05); border: 1px solid rgba(16, 185, 129, 0.15); color: #fff; font-size: 12px; display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 20px;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="file-icon" style="width: 14px; height: 14px; color: var(--c-accent);"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                    <span class="file-name" id="attached-file-name" style="max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">-</span>
+                    <button type="button" class="btn-remove-attachment" id="btn-remove-attachment" style="background: transparent; border: none; color: #ff6b6b; font-size: 16px; cursor: pointer; line-height: 1;">&times;</button>
+                  </div>
+                </div>
+
+                <button class="btn-primary" id="btn-submit-task" style="width: 100%; padding: 12px; font-weight: 600; display: flex; justify-content: center; align-items: center; gap: 8px;">
+                  <span>DEPLOY TASK</span>
+                </button>
+              </div>
+
+              <!-- Tasks Board (Kanban Bento Cell) -->
+              <div class="glass-panel tasks-list-widget bento-cell" style="height: 100%;">
+                <div class="panel-header-row">
+                  <div class="cell-title">TASK EXECUTION PIPELINE</div>
+                  <button class="btn-secondary" id="btn-refresh-tasks">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path></svg>
+                    <span>REFRESH</span>
+                  </button>
+                </div>
+                <div class="tasks-board">
+                  <div class="tasks-board-col" id="col-queued">
+                    <div class="board-col-header">QUEUED <span class="count" id="count-queued">0</span></div>
+                    <div class="board-col-cards scrollable-y" id="tasks-queued-container">
+                      <div class="no-data-msg small">No queued tasks.</div>
+                    </div>
+                  </div>
+                  <div class="tasks-board-col" id="col-running">
+                    <div class="board-col-header">RUNNING <span class="count" id="count-running">0</span></div>
+                    <div class="board-col-cards scrollable-y" id="tasks-running-container">
+                      <div class="no-data-msg small">No active tasks.</div>
+                    </div>
+                  </div>
+                  <div class="tasks-board-col" id="col-completed">
+                    <div class="board-col-header">COMPLETED <span class="count" id="count-completed">0</span></div>
+                    <div class="board-col-cards scrollable-y" id="tasks-completed-container">
+                      <div class="no-data-msg small">None completed.</div>
+                    </div>
+                  </div>
+                  <div class="tasks-board-col" id="col-failed">
+                    <div class="board-col-header">FAILED <span class="count" id="count-failed">0</span></div>
+                    <div class="board-col-cards scrollable-y" id="tasks-failed-container">
+                      <div class="no-data-msg small">No failed tasks.</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ============================= TAB: SWARM & SKILLS ============================= -->
+          <div id="tab-swarm" class="tab-pane">
+            <div class="swarm-skills-layout bento-grid">
+              
+              <!-- Left Panel: Swarm Directory -->
+              <div class="workflows-left-col bento-cell scrollable-y" style="padding-right: 0.5rem;">
+                <div class="glass-panel swarm-header-panel" style="padding: 20px; margin-bottom: 16px;">
+                  <div class="cell-title">SWARM DIRECTORY</div>
+                  <p class="description" style="font-size: 12px; color: var(--c-text-muted); margin-bottom: 12px;">Active node list of specialist agents currently wired to the main Supervisor bus.</p>
+                  
+                  <!-- Search & Filters -->
+                  <div class="swarm-controls-row" style="display: flex; flex-direction: column; gap: 10px;">
+                    <div class="search-input-wrapper">
+                      <input type="text" id="swarm-agent-search" placeholder="Filter agents by name or capability..." class="filter-input" style="width: 100%; padding: 10px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff;">
+                    </div>
+                    <div class="filter-tags-row" style="display: flex; gap: 8px; flex-wrap: wrap;">
+                      <button class="filter-tag active" data-type="all">All Nodes</button>
+                      <button class="filter-tag" data-type="system">System</button>
+                      <button class="filter-tag" data-type="coding">Coding & Debug</button>
+                      <button class="filter-tag" data-type="media">Vision & Media</button>
+                    </div>
+                  </div>
+                </div>
+                
+                <div class="agents-grid" id="swarm-agents-container" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px;">
+                  <div class="loading-spinner">Warming up registry bus...</div>
+                </div>
+              </div>
+
+              <!-- Right Panel: Skills Manager -->
+              <div class="workflows-right-col bento-cell scrollable-y" style="gap: 16px; padding-right: 0.25rem;">
+                <!-- Skill Markdown Uploader -->
+                <div class="glass-panel creator-widget" style="padding: 20px;">
+                  <div class="cell-title">UPLOAD CUSTOM SKILL</div>
+                  <p class="description" style="font-size: 12px; color: var(--c-text-muted); margin-bottom: 12px;">Upload a markdown (.md) file containing a custom skill definition, triggers, and execution details.</p>
+                  
+                  <div class="md-upload-zone" id="skill-md-upload-zone" style="border: 2px dashed rgba(255,255,255,0.1); border-radius: 8px; padding: 20px; text-align: center; cursor: pointer; transition: border-color 0.2s;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="upload-icon" style="width: 32px; height: 32px; margin-bottom: 0.5rem; opacity: 0.7; color: var(--c-glow);"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                    <p style="font-size: 13px; margin: 0;">Drag and drop a <strong>.md</strong> file or click to select</p>
+                    <input type="file" id="skill-md-file-input" accept=".md,.markdown" style="display: none;">
+                  </div>
+                  
+                  <!-- Live Preview of Parsed Skill -->
+                  <div class="parsed-preview-panel glass-panel hidden" id="skill-md-preview-panel" style="margin-top: 1rem; padding: 1rem; border-radius: 8px;">
+                    <div class="panel-header-tiny" style="font-weight: bold; margin-bottom: 0.5rem; font-size: 0.8rem; letter-spacing: 1px;">PARSED SKILL PREVIEW</div>
+                    <div class="preview-meta" style="margin-bottom: 1rem; font-size: 0.9rem; line-height: 1.4;">
+                      <p><strong>Name:</strong> <span id="skill-md-preview-name">-</span></p>
+                      <p><strong>Description:</strong> <span id="skill-md-preview-desc">-</span></p>
+                      <p><strong>Category:</strong> <span id="skill-md-preview-category">-</span></p>
+                      <p><strong>Triggers:</strong> <span id="skill-md-preview-triggers">-</span></p>
+                    </div>
+                    <div id="skill-md-error-msg" class="validation-error hidden" style="color: #ff6b6b; font-size: 0.85rem; margin-bottom: 1rem; padding: 0.5rem; background: rgba(255,107,107,0.1); border-radius: 4px;"></div>
+                    <button type="button" class="btn-primary" id="btn-deploy-md-skill" disabled>Deploy Custom Skill</button>
+                  </div>
+                </div>
+
+                <!-- Skills List -->
+                <div class="glass-panel list-widget" style="padding: 20px; flex: 1;">
+                  <div class="cell-title">SKILLS LIBRARY</div>
+                  <p class="description" style="font-size: 12px; color: var(--c-text-muted); margin-bottom: 12px;">Manage both built-in Python tools and your uploaded custom markdown instructions.</p>
+                  <div class="skills-list scrollable-y" id="skills-list-container" style="max-height: 350px; overflow-y: auto;">
+                    <!-- Dynamic skill rows -->
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- ============================= TAB: WORKFLOWS ============================= -->
+          <!-- ============================= TAB: WORKFLOWS ============================= -->
+          <div id="tab-workflows" class="tab-pane">
+            <div class="workflows-layout bento-grid">
+              
+              <!-- Left panel: Workflow Assets & Importer -->
+              <div class="workflows-left-col bento-cell scrollable-y" style="padding-right: 0.5rem; gap: 16px;">
+                
+                <!-- Upload Custom Workflow -->
+                <div class="glass-panel creator-widget" style="padding: 20px;">
+                  <div class="cell-title">UPLOAD CUSTOM WORKFLOW (.MD)</div>
+                  <p class="description" style="font-size: 12px; color: var(--c-text-muted); margin-bottom: 12px;">Upload a markdown (.md) file containing a custom workflow chain with sequential agent steps.</p>
+                  
+                  <div class="md-upload-zone" id="workflow-library-md-upload-zone" style="border: 2px dashed rgba(255,255,255,0.1); border-radius: 8px; padding: 20px; text-align: center; cursor: pointer; transition: border-color 0.2s;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="upload-icon" style="width: 32px; height: 32px; margin-bottom: 0.5rem; opacity: 0.7; color: var(--c-glow);"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                    <p style="font-size: 13px; margin: 0;">Drag and drop a <strong>.md</strong> file or click to select</p>
+                    <input type="file" id="workflow-library-md-file-input" accept=".md,.markdown" style="display: none;">
+                  </div>
+                  
+                  <!-- Live Preview of Parsed Workflow -->
+                  <div class="parsed-preview-panel glass-panel hidden" id="workflow-library-md-preview-panel" style="margin-top: 1rem; padding: 1rem; border-radius: 8px;">
+                    <div class="panel-header-tiny" style="font-weight: bold; margin-bottom: 0.5rem; font-size: 0.8rem; letter-spacing: 1px;">PARSED WORKFLOW PREVIEW</div>
+                    <div class="preview-meta" style="margin-bottom: 1rem; font-size: 0.9rem; line-height: 1.4;">
+                      <p><strong>Name:</strong> <span id="workflow-library-md-preview-name">-</span></p>
+                      <p><strong>Description:</strong> <span id="workflow-library-md-preview-desc">-</span></p>
+                      <p><strong>Schedule:</strong> <span id="workflow-library-md-preview-schedule">-</span></p>
+                    </div>
+                    
+                    <div class="table-container" style="margin-bottom: 1rem; max-height: 150px; overflow-y: auto;">
+                      <table style="width: 100%; border-collapse: collapse; text-align: left;">
+                        <thead>
+                          <tr style="border-bottom: 1px solid rgba(255,255,255,0.1); font-size: 0.75rem; text-transform: uppercase; color: rgba(255,255,255,0.4);">
+                            <th style="padding: 0.4rem 0.25rem;">Step</th>
+                            <th style="padding: 0.4rem 0.25rem;">Agent</th>
+                            <th style="padding: 0.4rem 0.25rem;">Action</th>
+                            <th style="padding: 0.4rem 0.25rem;">Payload</th>
+                          </tr>
+                        </thead>
+                        <tbody id="workflow-library-md-preview-steps-body">
+                          <!-- steps injected dynamically -->
+                        </tbody>
+                      </table>
+                    </div>
+                    
+                    <div id="workflow-library-md-error-msg" class="validation-error hidden" style="color: #ff6b6b; font-size: 0.85rem; margin-bottom: 1rem; padding: 0.5rem; background: rgba(255,107,107,0.1); border-radius: 4px;"></div>
+                    <button type="button" class="btn-primary" id="btn-deploy-library-md-workflow" disabled>Import Workflow</button>
+                  </div>
+                </div>
+
+                <!-- My Workflows Library (Imported Markdown Workflows) -->
+                <div class="glass-panel list-widget" style="padding: 20px;">
+                  <div class="cell-title">MY WORKFLOWS (IMPORTED)</div>
+                  <p class="description" style="font-size: 12px; color: var(--c-text-muted); margin-bottom: 12px;">Manage and execute your imported sequential markdown workflows.</p>
+                  <div class="workflows-list scrollable-y" id="workflows-library-list-container" style="max-height: 250px; overflow-y: auto;">
+                    <!-- Dynamic workflow rows -->
+                  </div>
+                </div>
+
+                <!-- Deployed System Workflows (Manually Built Workflows) -->
+                <div class="glass-panel list-widget" style="padding: 20px;">
+                  <div class="cell-title">DEPLOYED SYSTEM WORKFLOWS</div>
+                  <div class="workflows-list scrollable-y" id="workflows-list-container" style="max-height: 250px; overflow-y: auto;">
+                    <!-- Dynamic workflow rows -->
+                  </div>
+                </div>
+
+              </div>
+
+              <!-- Right panel: Workflow Creator Form, Scheduling & Triggers -->
+              <div class="workflows-right-col bento-cell scrollable-y" style="gap: 16px;">
+                
+                <!-- Compile Deployment Workflow Builder -->
+                <div class="glass-panel creator-widget" style="padding: 20px;">
+                  <div class="cell-title">COMPILE DEPLOYMENT WORKFLOW</div>
+                  <p class="description" style="font-size: 12px; color: var(--c-text-muted); margin-bottom: 12px;">Chain modular actions into a structured execution tree.</p>
+                  
+                  <form id="workflow-creator-form">
+                    <div class="form-group">
+                      <label for="wf-name">Workflow Descriptor</label>
+                      <input type="text" id="wf-name" placeholder="e.g. CI/CD Code Review Scan" required style="width: 100%; padding: 10px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff;">
+                    </div>
+                    
+                    <!-- Visual Step Builder Grid -->
+                    <div class="step-builder-panel glass-panel" style="padding: 16px; margin-bottom: 16px; border: 1px solid rgba(255,255,255,0.05); border-radius: 8px;">
+                      <div class="panel-header-tiny" style="font-size: 11px; font-weight: 700; color: var(--c-glow); margin-bottom: 10px;">ADD WORKFLOW STEP</div>
+                      <div class="step-builder-form" style="display: flex; flex-direction: column; gap: 10px;">
+                        <div class="builder-row" style="display: flex; gap: 10px;">
+                          <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                            <label style="font-size: 10px;">Agent Node</label>
+                            <select id="builder-agent-select" style="width: 100%; padding: 8px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff;">
+                              <option value="coding_agent">CodingAgent</option>
+                              <option value="debugging_agent">DebuggingAgent</option>
+                              <option value="execution_agent">ExecutionAgent</option>
+                              <option value="browser_agent">BrowserAgent</option>
+                              <option value="vision_agent">VisionAgent</option>
+                              <option value="verification_agent">VerificationAgent</option>
+                              <option value="memory_agent">MemoryAgent</option>
+                              <option value="language_agent">LanguageAgent</option>
+                            </select>
+                          </div>
+                          <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                            <label style="font-size: 10px;">Action</label>
+                            <input type="text" id="builder-action-input" placeholder="e.g. refactor_code" style="width: 100%; padding: 8px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff;">
+                          </div>
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                          <label style="font-size: 10px;">Step Description</label>
+                          <input type="text" id="builder-name-input" placeholder="Describe the goal of this step" style="width: 100%; padding: 8px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff;">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                          <label style="font-size: 10px;">Payload Arguments (JSON)</label>
+                          <textarea id="builder-args-input" rows="2" placeholder='{"arg_name": "value"}' style="width: 100%; padding: 8px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff; font-family: monospace;"></textarea>
+                        </div>
+                        <button type="button" class="btn-secondary" id="btn-add-builder-step" style="padding: 8px; font-size: 11px; font-weight: 600;">Append Step Node</button>
+                      </div>
+                      
+                      <!-- Visual List of Steps -->
+                      <div class="builder-steps-wrapper" style="margin-top: 12px;">
+                        <label style="font-size: 10px; display: block; margin-bottom: 6px;">Workflow Node Flow</label>
+                        <div class="builder-steps-list" id="builder-steps-list" style="border: 1px solid rgba(255,255,255,0.05); padding: 8px; border-radius: 6px; min-height: 60px; background: rgba(0,0,0,0.2);">
+                          <div class="no-steps-placeholder" style="font-size: 11px; color: var(--c-text-muted); text-align: center; padding-top: 15px;">No nodes defined. Use the builder above.</div>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <textarea id="wf-steps" class="hidden" required></textarea>
+                    <button class="btn-primary" type="submit" style="width: 100%; padding: 12px; font-weight: 600;">Deploy Compiled Workflow</button>
+                  </form>
+                </div>
+
+                <!-- Schedule Workflow Trigger & Active Cron Triggers -->
+                <div class="glass-panel schedules-creator-widget" style="padding: 20px;">
+                  <div class="cell-title">SCHEDULE WORKFLOW TRIGGER</div>
+                  <p class="description" style="font-size: 12px; color: var(--c-text-muted); margin-bottom: 12px;">Attach a cron clock trigger for periodic autonomous swarm executions.</p>
+                  
+                  <form id="schedule-creator-form" style="margin-bottom: 20px;">
+                    <div class="form-group">
+                      <label for="sched-name">Clock Indicator Label</label>
+                      <input type="text" id="sched-name" placeholder="e.g. Daily Security Audit Scan" required style="width: 100%; padding: 10px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff;">
+                    </div>
+                    <div class="form-group flex-row" style="display: flex; gap: 10px;">
+                      <div class="cron-field" style="flex: 1;">
+                        <label for="sched-cron">Cron Frequency Pattern</label>
+                        <input type="text" id="sched-cron" placeholder="0 3 * * * (e.g. Every day at 3:00 AM)" required style="width: 100%; padding: 10px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff;">
+                      </div>
+                      <div class="cron-human-field" style="flex: 1;">
+                        <label>Human Preview</label>
+                        <span class="cron-preview-text" id="cron-preview-text" style="display: inline-block; padding: 10px; font-size: 12px; color: var(--c-glow);">Every minute</span>
+                      </div>
+                    </div>
+                    <div class="form-group">
+                      <label for="sched-wf-id">Workflow Target</label>
+                      <select id="sched-wf-id" required style="width: 100%; padding: 10px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff;">
+                        <option value="">-- Select Deployment --</option>
+                      </select>
+                    </div>
+                    <button class="btn-primary" type="submit" style="width: 100%; padding: 12px; font-weight: 600;">Deploy Clock Trigger</button>
+                  </form>
+
+                  <div style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 15px;">
+                    <div class="cell-title" style="font-size: 11px;">ACTIVE CRON TRIGGERS</div>
+                    <div class="schedules-list scrollable-y" id="schedules-list-container" style="max-height: 200px; overflow-y: auto;">
+                      <!-- Dynamic schedule rows -->
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+              
+            </div>
+          </div>
+
+          <!-- ============================= TAB: APPROVALS ============================= -->
+          <div id="tab-approvals" class="tab-pane">
+            <div class="approvals-layout">
+              <div class="glass-panel approvals-header-panel">
+                <div class="cell-title">GATEWAY CONFIGURATION // CONFIRMS</div>
+                <p class="description">All system calls, terminal commands, or filesystem modifications requiring security authorization.</p>
+              </div>
+              <div class="approvals-grid" id="approvals-list-container">
+                <div class="no-data-msg">Telemetry secure. Swarm agents executing autonomously.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ============================= TAB: OBSERVABILITY ============================= -->
+          <div id="tab-observability" class="tab-pane">
+            <div class="observability-layout bento-grid scrollable-y" style="height: 100%; padding-right: 0.5rem; gap: 20px;">
+              <!-- Stats Metrics Grid -->
+              <div class="metrics-grid" id="observability-metrics-container" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px;">
+                <div class="metric-card glass-panel">
+                  <span class="label">Total Tasks (24h)</span>
+                  <span class="value" id="val-total-tasks">0</span>
+                  <span class="card-bar active"></span>
+                </div>
+                <div class="metric-card glass-panel">
+                  <span class="label">Success Rate</span>
+                  <span class="value" id="val-success-rate">0%</span>
+                  <span class="card-bar success"></span>
+                </div>
+                <div class="metric-card glass-panel">
+                  <span class="label">Avg Duration</span>
+                  <span class="value" id="val-avg-duration">0s</span>
+                  <span class="card-bar info"></span>
+                </div>
+                <div class="metric-card glass-panel">
+                  <span class="label">Tokens Used (24h)</span>
+                  <span class="value" id="val-total-tokens">0</span>
+                  <span class="card-bar warning"></span>
+                </div>
+                <div class="metric-card glass-panel">
+                  <span class="label">Total Cost</span>
+                  <span class="value" id="val-total-cost">$0</span>
+                  <span class="card-bar danger"></span>
+                </div>
+                <div class="metric-card glass-panel">
+                  <span class="label">Avg Confidence</span>
+                  <span class="value" id="val-avg-confidence">0.00</span>
+                  <span class="card-bar secondary"></span>
+                </div>
+              </div>
+
+              <!-- Top Split Row: Swarm performance & Diagnostic actions -->
+              <div class="observability-split-row" style="display: grid; grid-template-columns: 1.5fr 1fr; gap: 20px;">
+                <!-- Swarm performance breakdown -->
+                <div class="glass-panel table-panel" style="padding: 20px; display: flex; flex-direction: column;">
+                  <div class="cell-title">SWARM NODE RUNTIME METRICS</div>
+                  <div class="table-container" style="overflow-x: auto; flex: 1;">
+                    <table class="dashboard-table" style="width: 100%; border-collapse: collapse; text-align: left;">
+                      <thead>
+                        <tr>
+                          <th>Agent ID</th>
+                          <th>Runs</th>
+                          <th>Success Rate</th>
+                          <th>Avg Duration</th>
+                          <th>Tokens</th>
+                          <th>Confidence</th>
+                        </tr>
+                      </thead>
+                      <tbody id="agent-performance-tbody">
+                        <!-- rows injected dynamically -->
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <!-- Test notification panel -->
+                <div class="glass-panel profile-testing-panel diagnostics-panel" style="padding: 20px; display: flex; flex-direction: column; gap: 12px; border: 1px solid rgba(255,255,255,0.05); border-radius: 12px;">
+                  <div class="cell-title">TEST NOTIFICATION DISPATCH</div>
+                  <p class="description" style="font-size: 12px; color: var(--c-text-muted); margin: 0;">Verify email and SMS integration by triggering direct tests.</p>
+                  <div class="test-actions-row" style="display: flex; gap: 12px; margin-top: 10px;">
+                    <button class="btn-secondary" id="btn-test-email" style="flex: 1; padding: 12px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff; font-weight: 600; cursor: pointer; font-size: 11px;">
+                      <span>Send Test Email</span>
+                    </button>
+                    <button class="btn-secondary" id="btn-test-sms" style="flex: 1; padding: 12px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff; font-weight: 600; cursor: pointer; font-size: 11px;">
+                      <span>Send Test SMS</span>
+                    </button>
+                  </div>
+                  <div class="error-msg hidden" id="test-notif-error" style="color: var(--c-danger); font-size: 12px; margin-top: 10px; background: rgba(220,53,69,0.1); padding: 10px; border-radius: 6px; border: 1px solid rgba(220,53,69,0.2);"></div>
+                  <div class="success-msg hidden" id="test-notif-success" style="color: var(--c-success); font-size: 12px; margin-top: 10px; background: rgba(40,167,69,0.1); padding: 10px; border-radius: 6px; border: 1px solid rgba(40,167,69,0.2);">Test notification dispatched!</div>
+                </div>
+              </div>
+
+              <!-- Bottom Split Row: Traces & System event logs -->
+              <div class="observability-split-row" style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                <!-- Telemetry traces -->
+                <div class="glass-panel trace-spans-panel" style="padding: 20px;">
+                  <div class="panel-header-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                    <div class="cell-title">SYSTEM TRACE TELEMETRY LOGS</div>
+                    <button class="btn-secondary" id="btn-refresh-spans" style="padding: 6px 12px; font-size: 11px;">
+                      <span>REFRESH</span>
+                    </button>
+                  </div>
+                  <div class="table-container" style="overflow-x: auto; max-height: 350px; overflow-y: auto;">
+                    <table class="dashboard-table font-mono" style="width: 100%; border-collapse: collapse; text-align: left; font-size: 11px;">
+                      <thead>
+                        <tr>
+                          <th>Span ID</th>
+                          <th>Agent</th>
+                          <th>Task</th>
+                          <th>Status</th>
+                          <th>Duration</th>
+                          <th>Tokens</th>
+                          <th>Error</th>
+                        </tr>
+                      </thead>
+                      <tbody id="trace-spans-tbody">
+                        <!-- spans injected dynamically -->
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <!-- Event logs notifications -->
+                <div class="glass-panel notifications-panel" style="padding: 20px; display: flex; flex-direction: column;">
+                  <div class="cell-title">SYSTEM EVENTS // AUDIT LOGS</div>
+                  <div class="notifications-list-container scrollable-y" id="notifications-list-container" style="max-height: 350px; overflow-y: auto; margin-top: 10px;">
+                    <div class="no-data-msg">No recent notifications logged.</div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+        </div>
+      </main>
+
+      <!-- Mobile Bottom Navigation Bar -->
+      <nav class="mobile-nav-bar glass-panel">
+        <button class="mobile-nav-item active" data-tab="voice">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+          <span>Voice</span>
+        </button>
+        <button class="mobile-nav-item" data-tab="tasks">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+          <span class="badge hidden" id="mobile-badge-tasks-count">0</span>
+          <span>Tasks</span>
+        </button>
+        <button class="mobile-nav-item" data-tab="swarm">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+          <span>Swarm</span>
+        </button>
+        <button class="mobile-nav-item" data-tab="approvals">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+          <span class="badge alarm-badge hidden" id="mobile-badge-approvals-count">0</span>
+          <span>Gates</span>
+        </button>
+        <button class="mobile-nav-item" id="btn-mobile-more">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg>
+          <span>More</span>
+        </button>
+      </nav>
+
+      <!-- Mobile "More" Sheet Drawer -->
+      <div id="mobile-more-sheet" class="mobile-sheet hidden">
+        <div class="sheet-header">
+          <div class="sheet-handle"></div>
+          <span class="sheet-title">SYSTEM MENU</span>
+        </div>
+        <div class="sheet-content">
+          <button class="sheet-menu-item" data-tab="workflows">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+            <span>Workflows Manager</span>
+          </button>
+          <button class="sheet-menu-item" data-tab="observability">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
+            <span>System Observability & Logs</span>
+            <span class="badge hidden" id="mobile-badge-notifications-count">0</span>
+          </button>
+          <button class="sheet-menu-item" id="btn-mobile-settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l-.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+            <span>Profile Settings</span>
+          </button>
+          <hr class="sheet-divider">
+          <button class="sheet-menu-item logout-item" id="btn-mobile-logout">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+            <span>Disconnect Connection</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Backdrop overlay -->
+      <div id="mobile-overlay-backdrop" class="mobile-backdrop hidden"></div>
+    </div>
+  </div>
+
+  <!-- Settings Modal Overlay -->
+  <div id="settings-modal" class="settings-modal-overlay hidden">
+    <div class="settings-modal-container">
+      <div class="settings-modal-header">
+        <h3>SYSTEM SETTINGS // PROFILE</h3>
+        <button class="settings-modal-close" id="btn-settings-close">&times;</button>
+      </div>
+      <div class="settings-modal-body">
+        <div class="profile-layout" style="display: flex; flex-direction: column; gap: 16px;">
+          <div class="glass-panel profile-details-panel" style="padding: 0; border: none; display: flex; flex-direction: column; gap: 16px; background: none;">
+            
+            <div class="profile-form-grid" style="display: grid; grid-template-columns: 1fr; gap: 16px;">
+              <div class="input-group">
+                <label for="profile-username" style="display: block; font-size: 10px; color: var(--c-glow); font-weight: 600; margin-bottom: 6px; text-transform: uppercase;">Username</label>
+                <input type="text" id="profile-username" readonly disabled style="width: 100%; padding: 10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); border-radius: 6px; color: #fff; font-size: 13px; opacity: 0.6; cursor: not-allowed;">
+              </div>
+              <div class="input-group">
+                <label for="profile-email" style="display: block; font-size: 10px; color: var(--c-glow); font-weight: 600; margin-bottom: 6px; text-transform: uppercase;">Email Address</label>
+                <input type="email" id="profile-email" placeholder="name@example.com" style="width: 100%; padding: 10px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff; font-size: 13px;">
+              </div>
+              <div class="input-group">
+                <label for="profile-phone" style="display: block; font-size: 10px; color: var(--c-glow); font-weight: 600; margin-bottom: 6px; text-transform: uppercase;">Mobile Number</label>
+                <input type="tel" id="profile-phone" placeholder="+1234567890" style="width: 100%; padding: 10px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff; font-size: 13px;">
+              </div>
+            </div>
+
+            <div class="profile-section-divider" style="margin-top: 10px; font-size: 11px; font-weight: 700; color: var(--c-glow); border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 8px;">PASSWORD MANAGEMENT</div>
+            <div class="profile-form-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+              <div class="input-group">
+                <label for="profile-old-password" style="display: block; font-size: 10px; color: var(--c-glow); font-weight: 600; margin-bottom: 6px; text-transform: uppercase;">Current Password</label>
+                <input type="password" id="profile-old-password" placeholder="Verify current password" style="width: 100%; padding: 10px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff; font-size: 13px;">
+              </div>
+              <div class="input-group">
+                <label for="profile-new-password" style="display: block; font-size: 10px; color: var(--c-glow); font-weight: 600; margin-bottom: 6px; text-transform: uppercase;">New Password</label>
+                <input type="password" id="profile-new-password" placeholder="Create new password" style="width: 100%; padding: 10px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff; font-size: 13px;">
+              </div>
+            </div>
+
+            <div class="error-msg hidden" id="profile-error" style="color: var(--c-danger); font-size: 12px; margin-top: 10px; background: rgba(220,53,69,0.1); padding: 10px; border-radius: 6px; border: 1px solid rgba(220,53,69,0.2);"></div>
+            <div class="success-msg hidden" id="profile-success" style="color: var(--c-success); font-size: 12px; margin-top: 10px; background: rgba(40,167,69,0.1); padding: 10px; border-radius: 6px; border: 1px solid rgba(40,167,69,0.2);">Settings saved successfully!</div>
+
+            <div class="profile-actions" style="margin-top: 10px; display: flex; justify-content: flex-end;">
+              <button class="btn-primary" id="btn-profile-save" style="padding: 10px 20px; display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px;">
+                <span>Save Settings</span>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 16px; height: 16px;">
+                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                  <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                  <polyline points="7 3 7 8 15 8"></polyline>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Contextual Inspector Panel (task / agent / workflow detail drawer) -->
+  <div id="inspector-backdrop" class="inspector-backdrop hidden"></div>
+  <div id="inspector-panel" class="inspector-panel">
+    <div class="inspector-header">
+      <div class="inspector-header-titles">
+        <span class="inspector-kind" id="inspector-kind">—</span>
+        <span class="inspector-title" id="inspector-title">Nothing selected</span>
+      </div>
+      <button class="btn-inspector-close" id="btn-inspector-close" title="Close (Esc)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+      </button>
+    </div>
+    <div class="inspector-body" id="inspector-body">
+      <p class="inspector-muted">Select a task, agent, or workflow to inspect it here.</p>
+    </div>
+  </div>
+
+  <audio id="remote-audio" autoplay></audio>
+  <script src="js/utils.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/voice.js"></script>
+  <script src="js/websocket.js"></script>
+  <script src="js/tasks.js"></script>
+  <script src="js/settings.js"></script>
+  <script src="js/dag.js"></script>
+  <script src="js/inspector.js"></script>
+  <script src="js/app.js"></script>
+</body>
 </html>
