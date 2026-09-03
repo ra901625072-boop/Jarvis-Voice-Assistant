@@ -1,117 +1,151 @@
-# JARVIS Voice Assistant
+﻿<div align="center">
 
-JARVIS is a real-time, voice-enabled assistant designed using a multi-agent orchestration architecture. It relies on **LiveKit** for real-time WebRTC audio sessions, **FastAPI** for core API routing, **Flask** for serving the frontend client, and a two-speed learning loop backed by **SQLite** and **ChromaDB**.
+# 🤖 JARVIS Voice Assistant — 14-Agent Orchestration Swarm
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Python_3.12-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.12" />
+  <img src="https://img.shields.io/badge/LiveKit_WebRTC-FF0055?style=for-the-badge&logo=webrtc&logoColor=white" alt="LiveKit WebRTC" />
+  <img src="https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/ChromaDB_Vector-A855F7?style=for-the-badge&logo=databricks&logoColor=white" alt="ChromaDB" />
+  <img src="https://img.shields.io/badge/Multi--Agent_Swarm-14_Agents-FF6F00?style=for-the-badge&logo=openai" alt="14 Agents Swarm" />
+  <img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="MIT" />
+</p>
+
+<p align="center">
+  <b>Sub-Second Real-Time Voice Assistant Powered by LiveKit WebRTC, Dual-Speed Learning Loops, and 14 Specialized Autonomous Agents</b>
+</p>
+
+</div>
+
+---
+
+## 🌟 Overview
+
+**JARVIS** is an autonomous, real-time conversational voice assistant designed on a decentralized multi-agent orchestration pattern. It combines ultra-low-latency WebRTC bidirectional audio streams with a **14-agent swarm architecture** capable of high-level task planning, self-healing code execution, browser automation, visual screen understanding, and continuous reinforcement learning.
+
+---
+
+## 🏗️ Multi-Agent Architecture
+
+The architecture decouples perception, orchestration, and execution into 14 distinct specialist agents coordinated by a centralized **Supervisor Agent**:
+
+```mermaid
+flowchart TD
+    User(["🗣️ User Audio / WebRTC Stream"]) --> LiveKit["⚡ LiveKit RTC Audio Gateway"]
+    LiveKit --> Supervisor["👑 Supervisor Agent (Architect & Dispatcher)"]
+
+    subgraph PlanningRecovery["Cognitive & Strategy Core"]
+        Coordinator["🧠 Coordinator Agent"]
+        Planning["📐 Planning Agent"]
+        Verification["🛡️ Verification Agent"]
+        Recovery["🩹 Recovery & Self-Healing Agent"]
+    end
+
+    subgraph SpecialistExecution["Specialist Execution Swarm"]
+        Coding["💻 Coding Specialist"]
+        Debugging["🔍 Debugging Specialist"]
+        Browser["🌐 Browser Automation"]
+        Vision["👁️ Screen & UI Vision"]
+        Integration["🔌 Webhook & API Integration"]
+        Interaction["🎯 Grounded Interaction Loop"]
+        Language["🌍 Language & Translation"]
+    end
+
+    subgraph MemoryEngine["Dual-Speed Memory & Learning Engine"]
+        Memory["📚 Memory Agent"]
+        VectorDB[("🟣 ChromaDB Vector Memory")]
+        TracesDB[("💾 SQLite Traces & Capability Scores")]
+    end
+
+    Supervisor --> Coordinator & Planning & Execution
+    Planning --> SpecialistExecution
+    SpecialistExecution --> Verification
+    Verification -.->|Failure Alert| Recovery
+    Recovery -.->|Re-planning| Planning
+    SpecialistExecution --> Memory
+    Memory --> VectorDB & TracesDB
+```
+
+---
+
+## 🤖 14-Agent Responsibilities Breakdown
+
+| Agent | Core Function | Primary Tasks |
+|---|---|---|
+| **👑 Supervisor** | Session manager & main dispatcher | `speak`, `supervisor_routing`, `supervisor_session` |
+| **🧠 Coordinator** | Failure root-cause analysis & strategy | `generate_context`, `analyze_failure`, `evaluate_plan` |
+| **📐 Planning** | Multi-step deterministic & stochastic planning | `create_plan`, `replan` |
+| **⚡ Execution** | Action dispatcher & environment state reader | `execute_plan`, `get_world_state` |
+| **🛡️ Verification** | Constraint validation & goal satisfaction check | `verify_result` |
+| **🩹 Recovery** | Self-healing fallback procedures | `recover_failure` |
+| **📚 Memory** | Trajectory logging & contextual recall | `record_execution_report`, `replay`, `memory_health_check` |
+| **💻 Coding** | AST refactoring & automated project synthesis | `refactor_code`, `build_project` |
+| **🔍 Debugging** | Runtime error diagnosis & code patch verification | `diagnose_error`, `apply_self_healing`, `verify_fix` |
+| **🌐 Browser** | Headless / live browser task execution | `automate_web_flow` |
+| **👁️ Vision** | Screen capture parsing & UI coordinates detection | `analyze_screen`, `find_ui_element`, `read_screen_text` |
+| **🔌 Integration** | GraphQL, REST APIs & webhook listeners | `webhook_flow`, `call_graphql`, `sync_data` |
+| **🎯 Interaction** | Turn-by-turn grounded perception loops | `run_grounded_task` |
+| **🌍 Language** | Multilingual translation & document parsing | `detect_language`, `translate_text`, `set_language_preference` |
+
+---
+
+## 🧠 Dual-Speed Learning Engine
+
+JARVIS features a closed feedback loop that updates agent performance dynamically:
+- **Fast Online Loop:** Recalculates individual agent Exponential Moving Average (EMA) capability scores immediately upon task execution and tracks failure streaks in real time.
+- **Slow Consolidation Loop:** Nightly automated maintenance (`MemoryLifecycle.run_nightly` scheduled at 03:05) that recalculates ground-truth metrics, decays stale capabilities, and vectorizes execution lessons into ChromaDB.
 
 ---
 
 ## 🚀 Getting Started
 
-### Prerequisites
+### 1. Prerequisites
 - Python 3.12+
-- `npx` (Node Package Manager for MCP tools)
-- API Keys: `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `JARVIS_API_KEY`, and `GEMINI_API_KEY` (configured in `.env`)
+- `npx` (Node Package Manager)
+- API Keys: `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, and `GEMINI_API_KEY` (in `.env`)
 
-### Running the System
-The easiest way to start both the backend and frontend is by running the launcher script:
+### 2. Launching the System
 ```bash
+# Easy one-click startup (starts FastAPI backend + Frontend client):
 start_jarvis.bat
 ```
-This launcher will:
-1. Activate the Python virtual environment and start the **JARVIS Backend Server** (`apps/backend/main.py`) which exposes the FastAPI API at `http://localhost:8000` and the LiveKit RTC agent.
-2. Start the **JARVIS Frontend Server** via a Python HTTP server at `http://localhost:5173`.
+
+### 3. Verification & Diagnostic Test Suite
+```bash
+# Specialist Reachability Smoke Test (verifies all 14 agents on the message bus):
+python scripts/smoke_test.py
+
+# End-to-End Orchestration Swarm Simulation (5 complex scenarios):
+python scripts/e2e_smoke.py
+
+# Live Capability Scores & Streak Inspector:
+python check_learning_status.py
+```
 
 ---
 
 ## 📁 Repository Structure
 
-The workspace is organized as follows:
-
 ```
-d:/Jarvis/
+Jarvis/
 ├── apps/
-│   ├── backend/                 # FastAPI/LiveKit Backend application
-│   │   ├── ai/
-│   │   │   └── agents/          # Multi-agent orchestrator & specialist agents
-│   │   ├── api/                 # API routing and middleware
-│   │   ├── config/              # Server configuration and settings
-│   │   ├── database/            # Ignored runtime sqlite/chroma database folders
-│   │   ├── domain/              # Domain entities (e.g. models)
-│   │   ├── integrations/        # External service connectors
-│   │   ├── modules/             # Core memory, planning, database, and skill systems
-│   │   ├── server/              # Flask application wrapper serving frontend
-│   │   ├── tests/               # Pytest automated testing suite
-│   │   └── tools/builtin/       # Built-in capability tools (files, system, media, etc.)
-│   └── frontend/                # Frontend application client (index.html, styles.css, app.js)
-├── database/                    # SQLite database files (`traces.db`, `memory.db`)
-├── docs/                        # Architectural documentation
-│   └── realtime_learning_architecture.md  # Real-time learning details
-├── examples/                    # Developer guides & exercises
-│   └── agent_exercise_guide.md  # Guided scenarios to run and train specialist agents
-└── check_learning_status.py     # Monitoring dashboard CLI tool
+│   ├── backend/                 # FastAPI / LiveKit WebRTC backend application
+│   │   ├── ai/agents/           # 14 Autonomous Specialist Agents
+│   │   ├── api/                 # REST endpoints and WebRTC session management
+│   │   ├── modules/             # Memory lifecycle, planning engine, tools
+│   │   └── tests/               # Pytest automated test suites
+│   └── frontend/                # Interactive assistant web client (Vanilla JS)
+├── database/                    # SQLite databases (traces.db, memory.db)
+├── docs/                        # Architectural specifications
+├── scripts/                     # Smoke tests and diagnostic harnesses
+└── check_learning_status.py     # Monitoring CLI dashboard
 ```
 
 ---
 
-## 🤖 Multi-Agent Orchestration
+## 👨‍💻 Author
 
-JARVIS uses a **Supervisor Agent** (architect) to route and coordinate commands to 13 specialist agents on the message bus (14 agents total in the system):
-
-| Agent | Responsibility | Key Task Types |
-|---|---|---|
-| **Supervisor** | Main coordinator, handles session state and routing | `speak`, `supervisor_routing`, `supervisor_session` |
-| **Coordinator** | Generates context, analyzes failures, evaluates plans | `generate_context`, `analyze_failure`, `evaluate_plan` |
-| **Planning** | Creates step-by-step plans for complex actions | `create_plan`, `replan` |
-| **Execution** | Executes plan steps, queries world state | `execute_plan`, `get_world_state` |
-| **Verification** | Validates results against constraints | `verify_result` |
-| **Recovery** | Self-heals and runs recovery procedures on failure | `recover_failure` |
-| **Memory** | Stores execution reports and checks memory health | `record_execution_report`, `replay`, `memory_health_check` |
-| **Browser** | Automates browser tasks and retrieves web content | `automate_web_flow` |
-| **Coding** | Refactors code, builds software projects | `refactor_code`, `build_project` |
-| **Debugging** | Diagnoses errors, applies self-healing to scripts | `diagnose_error`, `apply_self_healing`, `verify_fix` |
-| **Integration**| Interacts with webhooks, GraphQL, APIs | `webhook_flow`, `call_graphql`, `sync_data`, etc. |
-| **Vision** | Reads screens, analyzes layouts, finds UI elements | `analyze_screen`, `find_ui_element`, `read_screen_text` |
-| **Interaction**| Conducts turn-by-turn grounded perception-action loops | `run_grounded_task` |
-| **Language** | Performs language detection, translation, and preference mapping | `detect_language`, `translate_text`, `extract_document_data`, `set_language_preference` |
-
----
-
-## 🧠 Real-Time Learning Loop
-
-Every specialist agent records outcomes that feed back into a **two-speed learning loop**:
-- **Fast Loop:** Updates live capability scores (EMA score) and records failure streaks on the fly. Fires immediately after each task.
-- **Slow Loop:** A nightly cleanup and consolidation job (`MemoryLifecycle.run_nightly` at 03:05) that recalculates ground-truth success metrics, decays old scores, and merges lessons.
-
-### Monitoring & Seeding Tools
-
-1. **Dashboard Monitor:** Check coverage and active failure streaks across all registered agents:
-   ```bash
-   python check_learning_status.py
-   ```
-2. **Smoke Test / Seeding:** Simulate successes and failures to verify or populate database scores without requiring active LLM/API keys:
-   ```bash
-   python seed_and_verify_learning.py            # run real seed
-   python seed_and_verify_learning.py --dry-run  # dry run preview
-   python seed_and_verify_learning.py --clean    # clean up test rows
-   ```
-
-3. **Verification & Integration Tests:**
-   JARVIS features a comprehensive integration verification suite to check connectivity and end-to-end swarm execution:
-   - **Specialist Reachability (Smoke Test):** Verify all 14 agents boot and register on the in-memory bus correctly:
-     ```bash
-     python scripts/smoke_test.py
-     ```
-   - **E2E Swarm Execution Test:** Simulates 5 high-level goal scenarios (deterministic plans, grounded visual routing, filesystem search, failure recovery, and concurrent dispatch) utilizing mock LLM wrappers to check the entire orchestration pipeline locally:
-     ```bash
-     python scripts/e2e_smoke.py
-     ```
-
-For detailed architectural information, see [realtime_learning_architecture.md](file:///d:/Jarvis/docs/realtime_learning_architecture.md).
-
----
-
-## 🛠️ Codebase Guidelines for Agents
-
-When developing or refactoring code within JARVIS:
-- **Automatic Folder Creation:** Directories like `runtime/` or database folders are gitignored and automatically generated at runtime. Do not manually create empty folders unless they contain a configuration/file.
-- **Preserve Comments:** Keep docstrings and code comments intact.
-- **Verification:** Always run `python seed_and_verify_learning.py --dry-run` or check the pytest suite in `apps/backend/tests/` before committing.
+**Akshaysinh Rajput**
+- 🌐 Portfolio: [portfolioakshay.in](https://portfolioakshay.in)
+- 💼 LinkedIn: [Akshaysinh Rajput](https://www.linkedin.com/in/akshaysinh-rajput-8a575532b/)
+- 🐙 GitHub: [@ra901625072-boop](https://github.com/ra901625072-boop)
